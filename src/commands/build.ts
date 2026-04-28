@@ -7,6 +7,7 @@ import { downloadPages } from "../core/crawler.js";
 import { discoverAssets, downloadAssets, type AssetRef } from "../core/assets.js";
 import { rewriteHtmlAssetUrls, rewriteCssUrls } from "../core/rewriter.js";
 import { clusterPages } from "../core/clustering.js";
+import { synthesizeTemplates } from "../core/templates.js";
 
 interface BuildOptions {
   force: string[];
@@ -160,7 +161,14 @@ export function registerBuild(program: Command): void {
       }
       console.log("");
 
-      // TODO: synthesize templates → fill
-      console.log(`  (template synthesis + fill not yet implemented)\n`);
+      console.log(`  Synthesizing templates with the LLM...`);
+      const library = await synthesizeTemplates(clusters, outputDir, { llm: config.llm });
+      const totalSlots = library.templates.reduce((n, t) => n + t.slots.length, 0);
+      console.log(
+        `  → ${library.templates.length} templates produced (${totalSlots} total slots)\n`,
+      );
+
+      // TODO: extract & fill templates per page
+      console.log(`  (template fill not yet implemented)\n`);
     });
 }
