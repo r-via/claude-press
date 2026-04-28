@@ -240,6 +240,61 @@ export function rewriteHreflangUrls(
   return touched ? $.html() : html;
 }
 
+/**
+ * Rewrite the `href` attribute of every `<link rel="canonical">` tag from
+ * `originalBaseUrl`'s origin to a root-relative local path (e.g.
+ * `https://example.com/en/blog/post/` → `/en/blog/post/`).  Cross-domain
+ * canonicals (different origin) are left intact and reported via
+ * `options.onCrossDomain`.  Pages without a canonical link are returned
+ * unchanged.
+ *
+ * Raw-string regex on purpose — cheerio round-trip would normalise
+ * unrelated markup, violating the SEO byte-preservation discipline used
+ * elsewhere in this module (see also `extractSeoHeadNodes`).
+ */
+const CANONICAL_LINK_RE =
+  /<link\b([^>]*\brel\s*=\s*["']?canonical["']?[^>]*)>/gi;
+const HREF_ATTR_RE = /\bhref\s*=\s*(["'])([^"']*)\1/i;
+
+export function rewriteCanonicalUrl(
+  html: string,
+  originalBaseUrl: string,
+  options: { onCrossDomain?: (href: string) => void } = {},
+): string {
+  if (!/rel\s*=\s*["']?canonical/i.test(html)) return html;
+
+  let originOriginal: string;
+  try {
+    originOriginal = new URL(originalBaseUrl).origin;
+  } catch {
+    return html;
+  }
+
+  return html.replace(CANONICAL_LINK_RE, (whole, attrs: string) => {
+    const m = HREF_ATTR_RE.exec(attrs);
+    if (!m) return whole;
+    const quote = m[1];
+    const raw = m[2];
+    let absolute: URL;
+    try {
+      absolute = new URL(raw, originalBaseUrl);
+    } catch {
+      return whole;
+    }
+    if (absolute.origin !== originOriginal) {
+      options.onCrossDomain?.(raw);
+      return whole;
+    }
+    const path = absolute.pathname + absolute.search + absolute.hash;
+    if (path === raw) return whole;
+    const newAttrs = attrs.replace(
+      HREF_ATTR_RE,
+      `href=${quote}${path}${quote}`,
+    );
+    return `<link${newAttrs}>`;
+  });
+}
+
 const URL_RE = /url\(\s*(['"]?)([^'")]+)\1\s*\)/g;
 
 /**

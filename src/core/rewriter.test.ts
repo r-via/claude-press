@@ -3,6 +3,7 @@ import {
   rewriteHtmlAssetUrls,
   rewriteCssUrls,
   rewriteHreflangUrls,
+  rewriteCanonicalUrl,
 } from "./rewriter.js";
 import type { AssetManifest } from "./assets.js";
 
@@ -177,5 +178,43 @@ describe("rewriteHreflangUrls", () => {
     const out = rewriteHreflangUrls(html, "https://ex.com/", "https://ex.com/");
     expect(out).toContain('href="/fr/page/"');
     expect(out).not.toContain('href="https://ex.com/fr/page/"');
+  });
+});
+
+describe("rewriteCanonicalUrl", () => {
+  it("rewrites canonical href from original absolute URL to local root-relative path", () => {
+    const html = `<link rel="canonical" href="https://ex.com/en/blog/post/">`;
+    const out = rewriteCanonicalUrl(html, "https://ex.com/");
+    expect(out).toContain('href="/en/blog/post/"');
+    expect(out).not.toContain("https://ex.com/en/blog/post/");
+  });
+
+  it("leaves cross-domain canonical href unchanged and reports it", () => {
+    const flagged: string[] = [];
+    const html = `<link rel="canonical" href="https://other.com/p/">`;
+    const out = rewriteCanonicalUrl(html, "https://ex.com/", {
+      onCrossDomain: (h) => flagged.push(h),
+    });
+    expect(out).toBe(html);
+    expect(flagged).toEqual(["https://other.com/p/"]);
+  });
+
+  it("returns input unchanged when no canonical link is present", () => {
+    const html = `<link rel="alternate" hreflang="fr" href="https://ex.com/fr/"><a href="https://ex.com/p/">x</a>`;
+    expect(rewriteCanonicalUrl(html, "https://ex.com/")).toBe(html);
+  });
+
+  it("preserves trailing slash and full markup byte-for-byte except href value", () => {
+    const html = `<link rel="canonical" href="https://ex.com/fr/page/" data-foo="bar"/>`;
+    const out = rewriteCanonicalUrl(html, "https://ex.com/");
+    expect(out).toContain('href="/fr/page/"');
+    expect(out).toContain('data-foo="bar"');
+    expect(out).toContain("/>");
+  });
+
+  it("preserves the original quote style", () => {
+    const html = `<link rel='canonical' href='https://ex.com/p/'>`;
+    const out = rewriteCanonicalUrl(html, "https://ex.com/");
+    expect(out).toContain("href='/p/'");
   });
 });

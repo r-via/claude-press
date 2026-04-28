@@ -9,6 +9,7 @@ import {
   rewriteHtmlAssetUrls,
   rewriteCssUrls,
   rewriteHreflangUrls,
+  rewriteCanonicalUrl,
 } from "../core/rewriter.js";
 import {
   clusterPages,
@@ -157,6 +158,13 @@ export function registerBuild(program: Command): void {
         // root-relative path that works regardless of where the cache is
         // served (file://, localhost, production CDN).
         next = rewriteHreflangUrls(next, sitemapOrigin);
+        // SEO: rewrite <link rel="canonical"> from the original origin to a
+        // root-relative path so the deployed cache is treated as
+        // authoritative (README § "SEO preservation").
+        next = rewriteCanonicalUrl(next, sitemapOrigin, {
+          onCrossDomain: (h) =>
+            console.warn(`    ! cross-domain canonical left intact: ${h}`),
+        });
         if (next !== html) {
           await writeFile(entry.localPath, next);
           rewrittenPages++;
