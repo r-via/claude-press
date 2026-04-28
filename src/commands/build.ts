@@ -17,6 +17,7 @@ import {
 } from "../core/extractor.js";
 import { generateResponsiveImages, rewriteImgToPicture } from "../core/images.js";
 import { purgePageCss, inlineCriticalCss } from "../core/css.js";
+import { minifyJsAssets, deferNonEssentialScripts } from "../core/js.js";
 
 interface BuildOptions {
   force: string[];
@@ -285,5 +286,41 @@ export function registerBuild(program: Command): void {
         }
       }
       console.log(`  → ${cssProcessedPages} pages CSS-optimized\n`);
+
+      console.log(`  Minifying JS assets...`);
+      const jsResult = await minifyJsAssets(outputDir);
+      const saved = jsResult.bytesBefore - jsResult.bytesAfter;
+      console.log(
+        `  → ${jsResult.filesProcessed} files minified (${jsResult.filesFailed} failed), ${saved} bytes saved\n`,
+      );
+
+      console.log(`  Deferring non-essential third-party scripts...`);
+      let deferredPages = 0;
+      const finalPagesForJs: string[] = [];
+      try {
+        const existing = await readdir(resolve(outputDir, "pages"), { recursive: true });
+        for (const name of existing) {
+          if (typeof name === "string" && name.endsWith("index.html")) {
+            finalPagesForJs.push(resolve(outputDir, "pages", name));
+          }
+        }
+      } catch (err) {
+        const code = (err as NodeJS.ErrnoException).code;
+        if (code !== "ENOENT") throw err;
+        console.warn(`    ! pages dir missing, skipping JS defer pass`);
+      }
+      for (const p of finalPagesForJs) {
+        try {
+          const html = await readFile(p, "utf8");
+          const next = await deferNonEssentialScripts(html);
+          if (next !== html) {
+            await writeFile(p, next);
+            deferredPages++;
+          }
+        } catch (err) {
+          console.warn(`    ! ${p}: JS defer failed: ${(err as Error).message}`);
+        }
+      }
+      console.log(`  → ${deferredPages} pages updated with deferred scripts\n`);
     });
 }

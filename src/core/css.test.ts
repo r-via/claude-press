@@ -47,6 +47,30 @@ describe("purgeCss", () => {
     expect(out).toContain(".btn");
     expect(out).not.toContain(".ghost");
   });
+
+  it("ignores CSS comments (including comments containing braces)", () => {
+    // A comment containing `{` would have corrupted the hand-rolled parser.
+    // lightningcss strips comments before our top-level scan, so the
+    // unused rule is correctly detected and dropped.
+    const css = `/* tricky { comment } */ .used { color: red; } /* more */ .unused { color: blue; }`;
+    const html = `<html><body><p class="used">x</p></body></html>`;
+    const out = purgeCss(css, html);
+    expect(out).toContain(".used");
+    expect(out).not.toContain(".unused");
+    expect(out).not.toContain("tricky");
+  });
+
+  it("flattens CSS nesting via lightningcss before purging", () => {
+    // `.parent` is matched (contains `.child`); `.lonely` is not.
+    // lightningcss flattens nesting so our top-level scanner can reason
+    // about each rule independently.
+    const css = `.parent { color: red; .child { color: blue; } } .lonely { color: green; }`;
+    const html = `<html><body><div class="parent"><span class="child">x</span></div></body></html>`;
+    const out = purgeCss(css, html);
+    expect(out).toContain(".parent");
+    expect(out).toContain(".child");
+    expect(out).not.toContain(".lonely");
+  });
 });
 
 describe("inlineCriticalCss", () => {

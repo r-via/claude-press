@@ -20,42 +20,72 @@ import * as cheerio from "cheerio";
 import { readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import Beasties from "beasties";
+import { transform as lightningTransform } from "lightningcss";
+
+/**
+ * Normalize CSS via lightningcss: strips comments, flattens CSS nesting,
+ * validates syntax, and serialises into canonical form.  Returns the input
+ * untouched on parse failure (better to over-keep than corrupt the page).
+ */
+function normalizeCssWithLightning(cssContent: string): string {
+  try {
+    const { code } = lightningTransform({
+      filename: "purge.css",
+      code: Buffer.from(cssContent),
+      minify: false,
+      sourceMap: false,
+      // Targets older browsers so lightningcss flattens modern CSS nesting
+      // into separate top-level rules our purger can evaluate individually.
+      targets: {
+        chrome: 80 << 16,
+        firefox: 78 << 16,
+        safari: 13 << 16,
+      },
+    });
+    return code.toString("utf8");
+  } catch {
+    return cssContent;
+  }
+}
 
 /**
  * Purge CSS rules whose selectors do not match the given HTML.
  *
- * Iterates top-level rules sequentially; at-rules (`@media`, `@keyframes`,
- * `@font-face`, `@supports`, etc.) are kept verbatim — only plain
- * "selector { decls }" rules are filtered.  Pure function.
+ * The CSS is first parsed and normalised by `lightningcss` — this handles
+ * comments, CSS nesting, and validates syntax — then top-level rules are
+ * iterated sequentially.  At-rules (`@media`, `@keyframes`, `@font-face`,
+ * `@supports`, etc.) are kept verbatim; only plain "selector { decls }"
+ * rules are filtered against the HTML.  Pure function.
  */
 export function purgeCss(cssContent: string, htmlContent: string): string {
+  const normalized = normalizeCssWithLightning(cssContent);
   const $ = cheerio.load(htmlContent);
   const out: string[] = [];
   let i = 0;
-  const n = cssContent.length;
-
-  const skipWhitespace = (): void => {
-    while (i < n && /\s/.test(cssContent[i]!)) i++;
-  };
+  const n = normalized.length;
 
   // Walk top-level: either an @-rule (kept verbatim) or a regular rule.
+  const skipWhitespace = (): void => {
+    while (i < n && /\s/.test(normalized[i]!)) i++;
+  };
+
   while (i < n) {
     skipWhitespace();
     if (i >= n) break;
 
-    if (cssContent[i] === "@") {
+    if (normalized[i] === "@") {
       // Capture the at-rule including its block (if any) verbatim.
       const start = i;
       // Read prelude up to ; or {
-      while (i < n && cssContent[i] !== ";" && cssContent[i] !== "{") i++;
-      if (i < n && cssContent[i] === ";") {
+      while (i < n && normalized[i] !== ";" && normalized[i] !== "{") i++;
+      if (i < n && normalized[i] === ";") {
         i++;
-        out.push(cssContent.slice(start, i));
-      } else if (i < n && cssContent[i] === "{") {
+        out.push(normalized.slice(start, i));
+      } else if (i < n && normalized[i] === "{") {
         // Skip balanced braces
         let depth = 0;
         while (i < n) {
-          const ch = cssContent[i]!;
+          const ch = normalized[i]!;
           if (ch === "{") depth++;
           else if (ch === "}") {
             depth--;
@@ -66,25 +96,25 @@ export function purgeCss(cssContent: string, htmlContent: string): string {
           }
           i++;
         }
-        out.push(cssContent.slice(start, i));
+        out.push(normalized.slice(start, i));
       } else {
         // EOF without terminator
-        out.push(cssContent.slice(start, i));
+        out.push(normalized.slice(start, i));
       }
       continue;
     }
 
     // Regular rule: read selector list up to {
     const selStart = i;
-    while (i < n && cssContent[i] !== "{") i++;
+    while (i < n && normalized[i] !== "{") i++;
     if (i >= n) break;
-    const selectorList = cssContent.slice(selStart, i).trim();
+    const selectorList = normalized.slice(selStart, i).trim();
 
     // Read body up to balanced }
     const bodyStart = i;
     let depth = 0;
     while (i < n) {
-      const ch = cssContent[i]!;
+      const ch = normalized[i]!;
       if (ch === "{") depth++;
       else if (ch === "}") {
         depth--;
@@ -95,7 +125,7 @@ export function purgeCss(cssContent: string, htmlContent: string): string {
       }
       i++;
     }
-    const body = cssContent.slice(bodyStart, i);
+    const body = normalized.slice(bodyStart, i);
 
     if (selectorMatchesHtml($, selectorList)) {
       out.push(`${selectorList} ${body}`);
@@ -158,10 +188,13 @@ export async function inlineCriticalCss(html: string, outputDir: string): Promis
   let processed: string;
   try {
     processed = await beasties.process(html);
-  } catch {
-    // Beasties failed (e.g. stylesheet not on disk).  Fall back to manually
-    // deferring every stylesheet so we still eliminate render-blocking
-    // resources.
+  } catch (err) {
+    // Beasties failed (e.g. stylesheet not on disk).  Log the error so
+    // the operator knows critical-CSS inlining was skipped, then fall back
+    // to manually deferring every stylesheet so we still eliminate
+    // render-blocking resources.
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn(`[css] inlineCriticalCss: beasties failed (${msg}) — falling back to async-link defer`);
     processed = html;
   }
 
@@ -198,8 +231,16 @@ export async function purgePageCss(html: string, outputDir: string): Promise<str
     let css: string;
     try {
       css = await readFile(cssAbs, "utf8");
-    } catch {
-      continue;
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code === "ENOENT") {
+        // Stylesheet not present locally (e.g. CDN not yet downloaded).  Skip.
+        continue;
+      }
+      // Permissions, disk error, etc. — don't swallow silently.
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn(`[css] purgePageCss: failed to read ${cssAbs} (${msg})`);
+      throw err;
     }
     const purged = purgeCss(css, html);
     if (purged !== css) {
