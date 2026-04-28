@@ -26,6 +26,7 @@ import { minifyJsAssets, deferNonEssentialScripts } from "../core/js.js";
 import { subsetFonts, injectFontDisplaySwap } from "../core/fonts.js";
 import { generateOutputSitemap } from "../core/sitemap-gen.js";
 import { cleanHtml, removeNonEssentialMeta } from "../core/html-clean.js";
+import { injectLcpPreload, injectFontPreloads } from "../core/preload.js";
 
 interface BuildOptions {
   force: string[];
@@ -337,6 +338,39 @@ export function registerBuild(program: Command): void {
         }
       }
       console.log(`  → ${cssProcessedPages} pages CSS-optimized\n`);
+
+      console.log(`  Injecting LCP image and font preload hints...`);
+      let preloadPages = 0;
+      let preloadHints = 0;
+      const finalPagesForPreload: string[] = [];
+      try {
+        const existing = await readdir(resolve(outputDir, "pages"), { recursive: true });
+        for (const name of existing) {
+          if (typeof name === "string" && name.endsWith("index.html")) {
+            finalPagesForPreload.push(resolve(outputDir, "pages", name));
+          }
+        }
+      } catch (err) {
+        const code = (err as NodeJS.ErrnoException).code;
+        if (code !== "ENOENT") throw err;
+      }
+      for (const p of finalPagesForPreload) {
+        try {
+          const html = await readFile(p, "utf8");
+          const before = (html.match(/rel="preload"/g) ?? []).length;
+          const withLcp = injectLcpPreload(html);
+          const withFonts = injectFontPreloads(withLcp);
+          const after = (withFonts.match(/rel="preload"/g) ?? []).length;
+          if (withFonts !== html) {
+            await writeFile(p, withFonts);
+            preloadPages++;
+            preloadHints += after - before;
+          }
+        } catch (err) {
+          console.warn(`    ! ${p}: preload injection failed: ${(err as Error).message}`);
+        }
+      }
+      console.log(`  → ${preloadHints} preload hints injected across ${preloadPages} pages\n`);
 
       console.log(`  Minifying JS assets...`);
       const jsResult = await minifyJsAssets(outputDir);
