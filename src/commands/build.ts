@@ -6,6 +6,7 @@ import { loadConfig } from "../core/config.js";
 import { downloadPages } from "../core/crawler.js";
 import { discoverAssets, downloadAssets, type AssetRef } from "../core/assets.js";
 import { rewriteHtmlAssetUrls, rewriteCssUrls } from "../core/rewriter.js";
+import { clusterPages } from "../core/clustering.js";
 
 interface BuildOptions {
   force: string[];
@@ -137,7 +138,29 @@ export function registerBuild(program: Command): void {
       }
       console.log(`  → ${rewrittenCss} CSS files rewritten\n`);
 
-      // TODO: cluster → synthesize templates → fill
-      console.log(`  (cluster + template pipeline not yet implemented)\n`);
+      console.log(`  Clustering pages by structural fingerprint...`);
+      const allPagePaths: string[] = [];
+      try {
+        const existing = await readdir(resolve(outputDir, "pages"), { recursive: true });
+        for (const name of existing) {
+          if (typeof name === "string" && name.endsWith("index.html")) {
+            allPagePaths.push(resolve(outputDir, "pages", name));
+          }
+        }
+      } catch {
+        /* no pages dir */
+      }
+      for (const m of manifest) {
+        if (!allPagePaths.includes(m.localPath)) allPagePaths.push(m.localPath);
+      }
+      const clusters = await clusterPages(allPagePaths, outputDir);
+      console.log(`  → ${clusters.length} clusters`);
+      for (const c of clusters) {
+        console.log(`     ${c.id} (${c.fingerprint}): ${c.pages.length} pages`);
+      }
+      console.log("");
+
+      // TODO: synthesize templates → fill
+      console.log(`  (template synthesis + fill not yet implemented)\n`);
     });
 }
