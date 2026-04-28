@@ -8,6 +8,13 @@ import { discoverAssets, downloadAssets, type AssetRef } from "../core/assets.js
 import { rewriteHtmlAssetUrls, rewriteCssUrls } from "../core/rewriter.js";
 import { clusterPages } from "../core/clustering.js";
 import { synthesizeTemplates } from "../core/templates.js";
+import {
+  deriveSlotSelectors,
+  extractSlotValues,
+  fillTemplate,
+  extractSeoHeadNodes,
+  injectSeoHeadNodes,
+} from "../core/extractor.js";
 
 interface BuildOptions {
   force: string[];
@@ -168,7 +175,29 @@ export function registerBuild(program: Command): void {
         `  → ${library.templates.length} templates produced (${totalSlots} total slots)\n`,
       );
 
-      // TODO: extract & fill templates per page
-      console.log(`  (template fill not yet implemented)\n`);
+      console.log(`  Filling templates per page...`);
+      let totalFilled = 0;
+      const fillCounts = new Map<string, number>();
+      for (const tpl of library.templates) {
+        const tplPath = resolve(outputDir, "templates", tpl.file);
+        const templateHtml = await readFile(tplPath, "utf8");
+        let perTpl = 0;
+        for (const pagePath of tpl.pages) {
+          const originalHtml = await readFile(pagePath, "utf8");
+          const selectors = deriveSlotSelectors(originalHtml, templateHtml, tpl.slots);
+          const values = extractSlotValues(originalHtml, selectors);
+          const filled = fillTemplate(templateHtml, values);
+          const seo = extractSeoHeadNodes(originalHtml);
+          const out = injectSeoHeadNodes(filled, seo);
+          await writeFile(pagePath, out);
+          perTpl++;
+          totalFilled++;
+        }
+        fillCounts.set(tpl.clusterId, perTpl);
+      }
+      for (const [cid, n] of fillCounts) {
+        console.log(`     ${cid}: ${n} pages filled`);
+      }
+      console.log(`  → ${totalFilled} pages rebuilt from templates\n`);
     });
 }
