@@ -44,6 +44,51 @@ async function tryRead(path: string): Promise<Uint8Array<ArrayBuffer> | undefine
   }
 }
 
+/**
+ * Build the Hono app that serves an `output/` directory.  Extracted so the
+ * `diff` command can mount the same routes on an ephemeral port without
+ * duplicating route logic.
+ */
+export function createServeApp(outputDir: string): Hono {
+  const app = new Hono();
+
+  app.get("/sitemap.xml", async (c) => {
+    const buf = await tryRead(join(outputDir, "sitemap.xml"));
+    if (!buf) return c.notFound();
+    return c.body(buf, 200, { "content-type": MIME[".xml"]! });
+  });
+
+  app.get("/assets/*", async (c) => {
+    const rel = c.req.path.replace(/^\/assets\//, "");
+    const buf = await tryRead(join(outputDir, "assets", rel));
+    if (!buf) return c.notFound();
+    return c.body(buf, 200, {
+      "content-type": mimeFor(rel),
+      "cache-control": "public, max-age=31536000, immutable",
+    });
+  });
+
+  app.get("*", async (c) => {
+    const rel = c.req.path.replace(/^\/+/, "");
+    const candidates = [
+      join(outputDir, "pages", rel, "index.html"),
+      join(outputDir, "pages", rel),
+    ];
+    for (const path of candidates) {
+      const buf = await tryRead(path);
+      if (buf) {
+        return c.body(buf, 200, {
+          "content-type": mimeFor(path),
+          "cache-control": "public, max-age=300",
+        });
+      }
+    }
+    return c.notFound();
+  });
+
+  return app;
+}
+
 export function registerServe(program: Command): void {
   program
     .command("serve")
@@ -53,41 +98,7 @@ export function registerServe(program: Command): void {
     .action(async (output: string, opts: ServeOptions) => {
       const outputDir = resolve(output);
       const port = Number(opts.port);
-      const app = new Hono();
-
-      app.get("/sitemap.xml", async (c) => {
-        const buf = await tryRead(join(outputDir, "sitemap.xml"));
-        if (!buf) return c.notFound();
-        return c.body(buf, 200, { "content-type": MIME[".xml"]! });
-      });
-
-      app.get("/assets/*", async (c) => {
-        const rel = c.req.path.replace(/^\/assets\//, "");
-        const buf = await tryRead(join(outputDir, "assets", rel));
-        if (!buf) return c.notFound();
-        return c.body(buf, 200, {
-          "content-type": mimeFor(rel),
-          "cache-control": "public, max-age=31536000, immutable",
-        });
-      });
-
-      app.get("*", async (c) => {
-        const rel = c.req.path.replace(/^\/+/, "");
-        const candidates = [
-          join(outputDir, "pages", rel, "index.html"),
-          join(outputDir, "pages", rel),
-        ];
-        for (const path of candidates) {
-          const buf = await tryRead(path);
-          if (buf) {
-            return c.body(buf, 200, {
-              "content-type": mimeFor(path),
-              "cache-control": "public, max-age=300",
-            });
-          }
-        }
-        return c.notFound();
-      });
+      const app = createServeApp(outputDir);
 
       console.log(`\nclaude-press — serve\n`);
       console.log(`  serving ${outputDir}`);
