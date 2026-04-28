@@ -38,6 +38,30 @@ export interface ClusterManifest {
   }>;
 }
 
+/**
+ * Known WordPress-specific CSS class noise patterns.  Classes matching
+ * any of these are stripped before fingerprint hashing so that pages
+ * differing only by per-page WP class variation (e.g. `post-123`,
+ * `vc_row_fluid`) collapse into the same cluster.
+ */
+const NOISE_CLASS_PATTERNS: RegExp[] = [
+  /^vc_/,
+  /^wpb_/,
+  /^nd_options_/,
+  /^post-\d+$/,
+  /^postid-\d+$/,
+  /^page-id-\d+$/,
+  /^category-\d+$/,
+];
+
+/**
+ * Filter out WordPress-specific noise classes that vary per page but
+ * carry no structural information.  Non-matching classes are preserved.
+ */
+export function denoiseClasses(classes: string[]): string[] {
+  return classes.filter((c) => !NOISE_CLASS_PATTERNS.some((p) => p.test(c)));
+}
+
 /** ISO 639 language code: two or three lowercase letters. */
 const LANG_PREFIX_RE = /^[a-z]{2,3}$/;
 
@@ -83,10 +107,12 @@ export function computeSkeleton(html: string): string {
     const rawClass = (el.attribs && el.attribs.class) || "";
     const classes = Array.from(
       new Set(
-        rawClass
-          .split(/\s+/)
-          .map((c) => c.trim())
-          .filter(Boolean),
+        denoiseClasses(
+          rawClass
+            .split(/\s+/)
+            .map((c) => c.trim())
+            .filter(Boolean),
+        ),
       ),
     ).sort();
     const cls = classes.length > 0 ? "." + classes.join(".") : "";

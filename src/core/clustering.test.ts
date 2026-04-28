@@ -7,6 +7,7 @@ import {
   computeFingerprint,
   computeSimilarity,
   computeSkeleton,
+  denoiseClasses,
   detectDivergentPages,
   deriveLanguagePrefix,
   type Cluster,
@@ -223,5 +224,56 @@ describe("detectDivergentPages", () => {
     );
     expect(result.divergent).toEqual(["/p/a.html"]);
     expect(result.fitted.size).toBe(0);
+  });
+});
+
+describe("denoiseClasses", () => {
+  it("strips all named WordPress noise patterns", () => {
+    const input = [
+      "vc_row", "wpb_wrapper", "nd_options_foo", "post-123",
+      "postid-456", "page-id-789", "category-42", "real-class",
+    ];
+    expect(denoiseClasses(input)).toEqual(["real-class"]);
+  });
+
+  it("preserves non-noise classes unchanged", () => {
+    const input = ["article", "hero", "sidebar", "post-title"];
+    expect(denoiseClasses(input)).toEqual(["article", "hero", "sidebar", "post-title"]);
+  });
+
+  it("returns empty array when all classes are noise", () => {
+    expect(denoiseClasses(["vc_col", "wpb_text", "post-99"])).toEqual([]);
+  });
+
+  it("returns empty array for empty input", () => {
+    expect(denoiseClasses([])).toEqual([]);
+  });
+});
+
+describe("computeSkeleton de-noising", () => {
+  it("produces identical skeleton for pages differing only by WP noise classes", () => {
+    const pageA = `<html><body><div class="content vc_row post-123"><h1>A</h1></div></body></html>`;
+    const pageB = `<html><body><div class="content vc_col post-456"><h1>B</h1></div></body></html>`;
+    expect(computeSkeleton(pageA)).toBe(computeSkeleton(pageB));
+  });
+
+  it("produces different skeleton when genuine classes differ", () => {
+    const pageA = `<html><body><div class="content hero"><h1>A</h1></div></body></html>`;
+    const pageB = `<html><body><div class="content sidebar"><h1>B</h1></div></body></html>`;
+    expect(computeSkeleton(pageA)).not.toBe(computeSkeleton(pageB));
+  });
+
+  it("clusterPages groups pages differing only by noise classes into one cluster", async () => {
+    await withTmpDir(async (dir) => {
+      const pagesDir = join(dir, "pages");
+      await mkdir(pagesDir, { recursive: true });
+      const p1 = join(pagesDir, "a.html");
+      const p2 = join(pagesDir, "b.html");
+      await writeFile(p1, `<html><body><article class="entry vc_row post-1 wpb_x"><h1>A</h1><p>x</p></article></body></html>`);
+      await writeFile(p2, `<html><body><article class="entry vc_col post-2 wpb_y"><h1>B</h1><p>y</p></article></body></html>`);
+      const clusters = await clusterPages([p1, p2], dir);
+      expect(clusters).toHaveLength(1);
+      expect(clusters[0].pages).toHaveLength(2);
+    });
   });
 });
