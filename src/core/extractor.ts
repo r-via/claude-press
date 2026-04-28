@@ -246,3 +246,39 @@ export function injectSeoHeadNodes(filledHtml: string, seo: ExtractedSeo): strin
   const headAttrs = headMatch[1];
   return `${before}<head${headAttrs}>${newInner}</head>${after}`;
 }
+
+const HTML_OPEN_RE = /<html\b([^>]*)>/i;
+const LANG_ATTR_RE = /\blang\s*=\s*["']([^"']+)["']/i;
+
+/**
+ * Read the `lang` attribute from the original page's `<html>` tag and copy
+ * it onto the filled HTML's `<html>` tag, preserving multilingual semantics.
+ * If the original has no `lang`, returns `filledHtml` unchanged.  If the
+ * filled HTML already declares the same `lang`, it is also returned
+ * unchanged.
+ */
+export function preserveHtmlLang(
+  originalHtml: string,
+  filledHtml: string,
+): string {
+  const origOpen = HTML_OPEN_RE.exec(originalHtml);
+  if (!origOpen) return filledHtml;
+  const langMatch = LANG_ATTR_RE.exec(origOpen[1]);
+  if (!langMatch) return filledHtml;
+  const lang = langMatch[1];
+
+  const filledOpen = HTML_OPEN_RE.exec(filledHtml);
+  if (!filledOpen) return filledHtml;
+  const filledAttrs = filledOpen[1];
+  const existing = LANG_ATTR_RE.exec(filledAttrs);
+  let nextAttrs: string;
+  if (existing) {
+    if (existing[1] === lang) return filledHtml;
+    nextAttrs = filledAttrs.replace(LANG_ATTR_RE, `lang="${lang}"`);
+  } else {
+    nextAttrs = `${filledAttrs.replace(/\s+$/, "")} lang="${lang}"`;
+  }
+  const before = filledHtml.slice(0, filledOpen.index);
+  const after = filledHtml.slice(filledOpen.index + filledOpen[0].length);
+  return `${before}<html${nextAttrs}>${after}`;
+}

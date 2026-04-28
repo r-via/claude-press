@@ -5,6 +5,7 @@ import {
   fillTemplate,
   extractSeoHeadNodes,
   injectSeoHeadNodes,
+  preserveHtmlLang,
   type SlotWarning,
 } from "./extractor.js";
 
@@ -152,5 +153,28 @@ describe("end-to-end extract + fill", () => {
     expect(out).toContain("Hello World");
     expect(out).toContain("Body copy here.");
     expect(out).toContain('rel="canonical"');
+  });
+});
+
+describe("preserveHtmlLang", () => {
+  it("copies lang from original to filled when filled lacks it", () => {
+    const out = preserveHtmlLang(
+      `<html lang="fr-CA"><body>x</body></html>`,
+      `<!doctype html><html><body>y</body></html>`,
+    );
+    expect(out).toContain('<html lang="fr-CA">');
+  });
+  it("replaces an existing lang on the filled HTML", () => {
+    const out = preserveHtmlLang(
+      `<html lang="fr"><body>x</body></html>`,
+      `<html lang="en" class="x"><body>y</body></html>`,
+    );
+    expect(out).toContain('lang="fr"');
+    expect(out).not.toContain('lang="en"');
+    expect(out).toContain('class="x"');
+  });
+  it("returns input unchanged when original has no lang", () => {
+    const filled = `<html><body>y</body></html>`;
+    expect(preserveHtmlLang(`<html><body>x</body></html>`, filled)).toBe(filled);
   });
 });

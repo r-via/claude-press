@@ -10,6 +10,13 @@ export interface Cluster {
   fingerprint: string;
   /** Local HTML file paths grouped under this fingerprint. */
   pages: string[];
+  /**
+   * Language prefix derived from the first path segment (e.g. `fr`, `en`)
+   * or from `<html lang>` when no prefix is present.  Empty string for
+   * single-language sites.  Pages with different prefixes always land in
+   * different clusters even when their DOM skeletons match.
+   */
+  languagePrefix: string;
 }
 
 export interface ClusterManifest {
@@ -19,7 +26,34 @@ export interface ClusterManifest {
     fingerprint: string;
     pageCount: number;
     pages: string[];
+    languagePrefix: string;
   }>;
+}
+
+/** ISO 639 language code: two or three lowercase letters. */
+const LANG_PREFIX_RE = /^[a-z]{2,3}$/;
+
+/**
+ * Derive the language prefix for an HTML document.  Preference order:
+ *   1. First non-empty path segment of `pagePath` (if it looks like a
+ *      2–3 char ISO code).
+ *   2. The 2–3 char prefix of the `<html lang="...">` attribute (e.g.
+ *      `fr-CA` → `fr`).
+ *   3. Empty string (single-language site).
+ */
+export function deriveLanguagePrefix(html: string, pagePath: string): string {
+  const norm = pagePath.replace(/\\/g, "/");
+  // Find the first segment AFTER any "pages/" prefix to skip the output root.
+  const cleaned = norm.replace(/^.*\/pages\//, "").replace(/^\/+/, "");
+  const firstSeg = cleaned.split("/")[0] ?? "";
+  if (firstSeg && LANG_PREFIX_RE.test(firstSeg)) return firstSeg;
+  // Fallback: <html lang="..."> attribute.
+  const m = /<html\b[^>]*\blang\s*=\s*["']([^"']+)["']/i.exec(html);
+  if (m) {
+    const code = m[1].split(/[-_]/)[0]?.toLowerCase() ?? "";
+    if (LANG_PREFIX_RE.test(code)) return code;
+  }
+  return "";
 }
 
 /**
@@ -68,22 +102,34 @@ export async function clusterPages(
   pagePaths: string[],
   outputDir: string,
 ): Promise<Cluster[]> {
-  const byFingerprint = new Map<string, string[]>();
+  // Group by (languagePrefix, fingerprint) so identical DOM under different
+  // language prefixes lands in distinct clusters per the multilingual spec.
+  const byKey = new Map<
+    string,
+    { fingerprint: string; languagePrefix: string; pages: string[] }
+  >();
   for (const p of pagePaths) {
     const html = await readFile(p, "utf8");
     const fp = computeFingerprint(html);
-    const existing = byFingerprint.get(fp);
+    const lang = deriveLanguagePrefix(html, p);
+    const key = `${lang}::${fp}`;
+    const existing = byKey.get(key);
     if (existing) {
-      existing.push(p);
+      existing.pages.push(p);
     } else {
-      byFingerprint.set(fp, [p]);
+      byKey.set(key, { fingerprint: fp, languagePrefix: lang, pages: [p] });
     }
   }
 
   const clusters: Cluster[] = [];
   let n = 0;
-  for (const [fingerprint, pages] of byFingerprint) {
-    clusters.push({ id: `cluster-${n++}`, fingerprint, pages });
+  for (const { fingerprint, languagePrefix, pages } of byKey.values()) {
+    clusters.push({
+      id: `cluster-${n++}`,
+      fingerprint,
+      pages,
+      languagePrefix,
+    });
   }
 
   const templatesDir = resolve(outputDir, "templates");
@@ -95,6 +141,7 @@ export async function clusterPages(
       fingerprint: c.fingerprint,
       pageCount: c.pages.length,
       pages: c.pages,
+      languagePrefix: c.languagePrefix,
     })),
   };
   await writeFile(

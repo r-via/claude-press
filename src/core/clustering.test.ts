@@ -2,7 +2,11 @@ import { describe, it, expect } from "vitest";
 import { mkdtemp, mkdir, readFile, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { clusterPages, computeFingerprint } from "./clustering.js";
+import {
+  clusterPages,
+  computeFingerprint,
+  deriveLanguagePrefix,
+} from "./clustering.js";
 
 async function withTmpDir<T>(fn: (dir: string) => Promise<T>): Promise<T> {
   const dir = await mkdtemp(join(tmpdir(), "clustering-test-"));
@@ -46,6 +50,19 @@ describe("computeFingerprint", () => {
   });
 });
 
+describe("deriveLanguagePrefix", () => {
+  it("uses first path segment under pages/ when it looks like an ISO code", () => {
+    expect(deriveLanguagePrefix("<html><body>x</body></html>", "/o/pages/fr/blog/post.html")).toBe("fr");
+    expect(deriveLanguagePrefix("<html><body>x</body></html>", "/o/pages/en-US/x.html")).toBe("");
+  });
+  it("falls back to <html lang>", () => {
+    expect(deriveLanguagePrefix(`<html lang="fr-CA"><body>x</body></html>`, "/o/pages/index.html")).toBe("fr");
+  });
+  it("returns empty string when neither source has a code", () => {
+    expect(deriveLanguagePrefix("<html><body>x</body></html>", "/o/pages/index.html")).toBe("");
+  });
+});
+
 describe("clusterPages", () => {
   it("groups identical-structure pages and writes _manifest.json", async () => {
     await withTmpDir(async (dir) => {
@@ -77,6 +94,40 @@ describe("clusterPages", () => {
       expect(manifest.clusters[0]).toHaveProperty("pageCount");
       expect(manifest.clusters[0]).toHaveProperty("pages");
       expect(typeof manifest.generatedAt).toBe("string");
+    });
+  });
+
+  it("partitions identical-DOM pages by language path prefix (AC1, AC6)", async () => {
+    await withTmpDir(async (dir) => {
+      const pagesDir = join(dir, "pages");
+      const fr = join(pagesDir, "fr");
+      const en = join(pagesDir, "en");
+      await mkdir(fr, { recursive: true });
+      await mkdir(en, { recursive: true });
+      const pFr = join(fr, "post.html");
+      const pEn = join(en, "post.html");
+      await writeFile(pFr, blogPost("Bonjour", "salut"));
+      await writeFile(pEn, blogPost("Hello", "hi"));
+
+      const clusters = await clusterPages([pFr, pEn], dir);
+      expect(clusters).toHaveLength(2);
+      const langs = clusters.map((c) => c.languagePrefix).sort();
+      expect(langs).toEqual(["en", "fr"]);
+    });
+  });
+
+  it("single-language site clusters normally with empty languagePrefix", async () => {
+    await withTmpDir(async (dir) => {
+      const pagesDir = join(dir, "pages");
+      await mkdir(pagesDir, { recursive: true });
+      const a = join(pagesDir, "a.html");
+      const b = join(pagesDir, "b.html");
+      await writeFile(a, blogPost("A", "x"));
+      await writeFile(b, blogPost("B", "y"));
+      const clusters = await clusterPages([a, b], dir);
+      expect(clusters).toHaveLength(1);
+      expect(clusters[0].languagePrefix).toBe("");
+      expect(clusters[0].pages.length).toBe(2);
     });
   });
 

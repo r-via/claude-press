@@ -5,7 +5,11 @@ import { expandSitemap } from "../core/sitemap.js";
 import { loadConfig } from "../core/config.js";
 import { downloadPages } from "../core/crawler.js";
 import { discoverAssets, downloadAssets, type AssetRef } from "../core/assets.js";
-import { rewriteHtmlAssetUrls, rewriteCssUrls } from "../core/rewriter.js";
+import {
+  rewriteHtmlAssetUrls,
+  rewriteCssUrls,
+  rewriteHreflangUrls,
+} from "../core/rewriter.js";
 import { clusterPages } from "../core/clustering.js";
 import { synthesizeTemplates } from "../core/templates.js";
 import {
@@ -14,6 +18,7 @@ import {
   fillTemplate,
   extractSeoHeadNodes,
   injectSeoHeadNodes,
+  preserveHtmlLang,
 } from "../core/extractor.js";
 import { generateResponsiveImages, rewriteImgToPicture } from "../core/images.js";
 import { purgePageCss, inlineCriticalCss } from "../core/css.js";
@@ -120,15 +125,19 @@ export function registerBuild(program: Command): void {
       console.log(`  Rewriting asset URLs in pages...`);
       let rewrittenPages = 0;
       let unmatchedCount = 0;
+      const sitemapOrigin = new URL(sitemap).origin;
       for (const entry of manifest) {
         const html = await readFile(entry.localPath, "utf8");
         const pageLocalPath = relative(outputDir, entry.localPath).split(/[\\/]/).join("/");
-        const next = rewriteHtmlAssetUrls(html, entry.url, assetResult.manifest, {
+        let next = rewriteHtmlAssetUrls(html, entry.url, assetResult.manifest, {
           pageLocalPath,
           onUnmatched: () => {
             unmatchedCount++;
           },
         });
+        // Multilingual: re-target hreflang cross-references to the local URL
+        // space so language switchers keep working (README § Multilingual).
+        next = rewriteHreflangUrls(next, sitemapOrigin, sitemapOrigin);
         if (next !== html) {
           await writeFile(entry.localPath, next);
           rewrittenPages++;
@@ -214,7 +223,8 @@ export function registerBuild(program: Command): void {
             const values = extractSlotValues(originalHtml, selectors);
             const filled = fillTemplate(templateHtml, values);
             const seo = extractSeoHeadNodes(originalHtml);
-            const out = injectSeoHeadNodes(filled, seo);
+            const withSeo = injectSeoHeadNodes(filled, seo);
+            const out = preserveHtmlLang(originalHtml, withSeo);
             await writeFile(pagePath, out);
             perTpl++;
             totalFilled++;
@@ -386,8 +396,7 @@ export function registerBuild(program: Command): void {
       );
 
       console.log(`  Regenerating output sitemap.xml...`);
-      const sitemapBaseUrl = new URL(sitemap).origin;
-      await generateOutputSitemap(outputDir, sitemapBaseUrl);
+      await generateOutputSitemap(outputDir, sitemapOrigin);
       let urlCount = 0;
       try {
         const existing = await readdir(resolve(outputDir, "pages"), {

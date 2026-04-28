@@ -1,5 +1,9 @@
 import { describe, it, expect } from "vitest";
-import { rewriteHtmlAssetUrls, rewriteCssUrls } from "./rewriter.js";
+import {
+  rewriteHtmlAssetUrls,
+  rewriteCssUrls,
+  rewriteHreflangUrls,
+} from "./rewriter.js";
 import type { AssetManifest } from "./assets.js";
 
 describe("rewriteHtmlAssetUrls", () => {
@@ -132,5 +136,31 @@ describe("rewriteCssUrls", () => {
     expect(out).toContain("https://ex.com/missing.png");
     expect(out).toContain("data:image/png;base64,AAA");
     expect(unmatched).toEqual(["https://ex.com/missing.png"]);
+  });
+});
+
+describe("rewriteHreflangUrls", () => {
+  it("rewrites hreflang links from origin to local base, preserving path", () => {
+    const html = `<link rel="alternate" hreflang="fr" href="https://ex.com/fr/page/"><link rel="alternate" hreflang="en" href="https://ex.com/en/page/">`;
+    const out = rewriteHreflangUrls(html, "https://ex.com/", "http://localhost:8080/");
+    expect(out).toContain('href="http://localhost:8080/fr/page/"');
+    expect(out).toContain('href="http://localhost:8080/en/page/"');
+  });
+
+  it("leaves non-hreflang links unchanged", () => {
+    const html = `<a href="https://ex.com/fr/page/">link</a><link rel="canonical" href="https://ex.com/p/">`;
+    const out = rewriteHreflangUrls(html, "https://ex.com/", "http://localhost:8080/");
+    expect(out).toBe(html);
+  });
+
+  it("returns input unchanged when no hreflang links present", () => {
+    const html = `<html><body>nothing</body></html>`;
+    expect(rewriteHreflangUrls(html, "https://ex.com/", "http://localhost:8080/")).toBe(html);
+  });
+
+  it("ignores hreflang links pointing at a different origin", () => {
+    const html = `<link rel="alternate" hreflang="de" href="https://other.com/de/page/">`;
+    const out = rewriteHreflangUrls(html, "https://ex.com/", "http://localhost:8080/");
+    expect(out).toContain('href="https://other.com/de/page/"');
   });
 });

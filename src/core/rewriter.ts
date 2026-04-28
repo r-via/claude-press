@@ -178,6 +178,56 @@ export function rewriteHtmlAssetUrls(
   return $.html();
 }
 
+/**
+ * Rewrite `href` attributes on `<link rel="alternate" hreflang="...">` tags
+ * from `originalBaseUrl` to `localBaseUrl`, preserving the path.  Other links
+ * are left untouched.  Pages with no hreflang links are returned unchanged.
+ */
+export function rewriteHreflangUrls(
+  html: string,
+  originalBaseUrl: string,
+  localBaseUrl: string,
+): string {
+  if (!/hreflang/i.test(html)) return html;
+
+  const $ = cheerio.load(html, { decodeEntities: false });
+  let touched = false;
+
+  let originOriginal: string;
+  let originLocal: string;
+  try {
+    originOriginal = new URL(originalBaseUrl).origin;
+  } catch {
+    return html;
+  }
+  try {
+    originLocal = new URL(localBaseUrl).origin;
+  } catch {
+    originLocal = localBaseUrl.replace(/\/+$/, "");
+  }
+
+  $('link[rel="alternate"][hreflang]').each((_i, el) => {
+    const $el = $(el);
+    const raw = $el.attr("href");
+    if (!raw) return;
+    let absolute: URL;
+    try {
+      absolute = new URL(raw, originalBaseUrl);
+    } catch {
+      return;
+    }
+    if (absolute.origin !== originOriginal) return;
+    const path = absolute.pathname + absolute.search + absolute.hash;
+    const next = `${originLocal}${path}`;
+    if (next !== raw) {
+      $el.attr("href", next);
+      touched = true;
+    }
+  });
+
+  return touched ? $.html() : html;
+}
+
 const URL_RE = /url\(\s*(['"]?)([^'")]+)\1\s*\)/g;
 
 /**
