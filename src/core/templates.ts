@@ -144,8 +144,10 @@ export async function synthesizeTemplates(
       clusters: clusters.map((c) => ({
         id: c.id,
         fingerprint: c.fingerprint,
+        skeleton: c.skeleton,
         pageCount: c.pages.length,
         pages: c.pages,
+        languagePrefix: c.languagePrefix,
       })),
     };
   }

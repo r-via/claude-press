@@ -10,7 +10,13 @@ import {
   rewriteCssUrls,
   rewriteHreflangUrls,
 } from "../core/rewriter.js";
-import { clusterPages } from "../core/clustering.js";
+import {
+  clusterPages,
+  computeSkeleton,
+  detectDivergentPages,
+  type Cluster,
+} from "../core/clustering.js";
+import { createHash } from "node:crypto";
 import { synthesizeTemplates } from "../core/templates.js";
 import {
   deriveSlotSelectors,
@@ -200,8 +206,42 @@ export function registerBuild(program: Command): void {
       }
       console.log("");
 
+      // Divergence detection — pages whose structure doesn't fit any
+      // cluster's representative get their own ad-hoc single-page cluster
+      // routed through synthesizeTemplates so the LLM produces a new
+      // template (README § "Template-driven rebuild" step 4).
+      const pageSkeletons: Array<{ path: string; skeleton: string }> = [];
+      for (const p of allPagePaths) {
+        try {
+          const html = await readFile(p, "utf8");
+          pageSkeletons.push({ path: p, skeleton: computeSkeleton(html) });
+        } catch {
+          /* unreadable page — ignore */
+        }
+      }
+      const { divergent } = detectDivergentPages(pageSkeletons, clusters);
+      const divergentClusters: Cluster[] = [];
+      for (let i = 0; i < divergent.length; i++) {
+        const p = divergent[i] ?? "";
+        const sk = pageSkeletons.find((x) => x.path === p)?.skeleton ?? "";
+        if (!p) continue;
+        divergentClusters.push({
+          id: `cluster-divergent-${i}`,
+          fingerprint: createHash("sha256").update(sk).digest("hex").slice(0, 12),
+          skeleton: sk,
+          pages: [p],
+          languagePrefix: "",
+        });
+      }
+      if (divergentClusters.length > 0) {
+        console.log(
+          `  → ${divergentClusters.length} divergent pages routed to new templates`,
+        );
+      }
+
       console.log(`  Synthesizing templates with the LLM...`);
-      const library = await synthesizeTemplates(clusters, outputDir, { llm: config.llm });
+      const allClusters: Cluster[] = [...clusters, ...divergentClusters];
+      const library = await synthesizeTemplates(allClusters, outputDir, { llm: config.llm });
       const totalSlots = library.templates.reduce((n, t) => n + t.slots.length, 0);
       console.log(
         `  → ${library.templates.length} templates produced (${totalSlots} total slots)\n`,

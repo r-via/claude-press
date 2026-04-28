@@ -5,7 +5,11 @@ import { join } from "node:path";
 import {
   clusterPages,
   computeFingerprint,
+  computeSimilarity,
+  computeSkeleton,
+  detectDivergentPages,
   deriveLanguagePrefix,
+  type Cluster,
 } from "./clustering.js";
 
 async function withTmpDir<T>(fn: (dir: string) => Promise<T>): Promise<T> {
@@ -131,6 +135,19 @@ describe("clusterPages", () => {
     });
   });
 
+  it("persists skeleton field on each cluster and in _manifest.json", async () => {
+    await withTmpDir(async (dir) => {
+      const p = join(dir, "p.html");
+      await writeFile(p, blogPost("A", "x"));
+      const clusters = await clusterPages([p], dir);
+      expect(clusters[0].skeleton).toBe(computeSkeleton(blogPost("A", "x")));
+      const manifest = JSON.parse(
+        await readFile(join(dir, "templates", "_manifest.json"), "utf8"),
+      );
+      expect(manifest.clusters[0].skeleton).toBe(clusters[0].skeleton);
+    });
+  });
+
   it("assigns stable cluster-<n> ids", async () => {
     await withTmpDir(async (dir) => {
       const p = join(dir, "p.html");
@@ -138,5 +155,73 @@ describe("clusterPages", () => {
       const clusters = await clusterPages([p], dir);
       expect(clusters[0].id).toBe("cluster-0");
     });
+  });
+});
+
+describe("computeSimilarity", () => {
+  it("returns 1.0 for identical skeletons", () => {
+    const s = computeSkeleton(blogPost("A", "x"));
+    expect(computeSimilarity(s, s)).toBe(1);
+  });
+
+  it("returns < 0.7 for structurally different pages", () => {
+    const a = computeSkeleton(blogPost("A", "x"));
+    const b = computeSkeleton(homepage);
+    expect(computeSimilarity(a, b)).toBeLessThan(0.7);
+  });
+
+  it("returns 0 for fully disjoint skeletons", () => {
+    const a = computeSkeleton(`<html><body><div><span>x</span></div></body></html>`);
+    const b = computeSkeleton(`<html><body><ul><li><a>y</a></li></ul></body></html>`);
+    expect(computeSimilarity(a, b)).toBeLessThan(0.5);
+  });
+});
+
+describe("detectDivergentPages", () => {
+  const mkCluster = (id: string, skeleton: string): Cluster => ({
+    id,
+    fingerprint: id,
+    skeleton,
+    pages: [],
+    languagePrefix: "",
+  });
+
+  it("partitions fitted vs divergent given a 0.7 threshold", () => {
+    const cluster = mkCluster("c0", computeSkeleton(blogPost("A", "x")));
+    const fittingPage = {
+      path: "/p/fit.html",
+      skeleton: computeSkeleton(blogPost("B", "y")),
+    };
+    const divergentPage = {
+      path: "/p/div.html",
+      skeleton: computeSkeleton(homepage),
+    };
+    const result = detectDivergentPages(
+      [fittingPage, divergentPage],
+      [cluster],
+      0.7,
+    );
+    expect(result.fitted.get("/p/fit.html")).toBe(cluster);
+    expect(result.divergent).toContain("/p/div.html");
+    expect(result.fitted.has("/p/div.html")).toBe(false);
+  });
+
+  it("uses default threshold 0.7 when omitted", () => {
+    const cluster = mkCluster("c0", computeSkeleton(blogPost("A", "x")));
+    const page = {
+      path: "/p/q.html",
+      skeleton: computeSkeleton(blogPost("Z", "qq")),
+    };
+    const result = detectDivergentPages([page], [cluster]);
+    expect(result.fitted.has("/p/q.html")).toBe(true);
+  });
+
+  it("classifies all pages divergent when no clusters exist", () => {
+    const result = detectDivergentPages(
+      [{ path: "/p/a.html", skeleton: "0:html|1:body" }],
+      [],
+    );
+    expect(result.divergent).toEqual(["/p/a.html"]);
+    expect(result.fitted.size).toBe(0);
   });
 });
