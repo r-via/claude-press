@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "playwright": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@playwright/mcp@latest",
+        "--executable-path",
+        "/home/rviau/.cache/ms-playwright/chromium-1217/chrome-linux64/chrome",
+        "--headless",
+        "--output-dir",
+        "tmp/screenshots"
+      ]
+    }
+  }
+}

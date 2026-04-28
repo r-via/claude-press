@@ -54,14 +54,90 @@ For sites serving multiple languages under path prefixes (e.g. `/fr/`, `/en/`), 
 
 ## Template-driven rebuild
 
-This is the core architectural choice: **the LLM works on templates, not pages**. Concretely:
+The core architectural choice: **the LLM works on templates, not pages, and visually rather than textually**. Two complementary mechanisms keep cost low and fidelity high — a deterministic structural matcher decides *which* pages need an LLM call, and a visual synthesis loop produces the templates without ever showing raw HTML to the model.
 
-1. **Cluster** — pages are grouped by structural fingerprint (DOM shape, CSS classes, content blocks). On a typical WordPress site this collapses 700+ pages into 4–8 clusters.
-2. **Synthesize** — for each cluster, Claude produces an optimized template: clean HTML skeleton, named content slots (`{{title}}`, `{{hero_image}}`, `{{body}}`, …), inlined critical CSS, deferred non-critical CSS/JS, proper `<picture>` markup for adaptive images.
-3. **Extract & fill** — for each page in the cluster, a deterministic extractor reads the original HTML (cheerio selectors derived from the cluster analysis) and pours the content into the template. No LLM call per page.
-4. **Diverge** — if a page doesn't fit any existing template (similarity below threshold), Claude is asked to produce a new template; it joins the library and is reused on the next match.
+### 1. Cluster — deterministic, no LLM
 
-**Why this matters:** ~5 LLM calls instead of ~705. Deterministic, reproducible, cheap, and the template library becomes a versioned artifact you can review, edit, and improve over time.
+Every downloaded page gets a **structural fingerprint** computed by cheerio: ordered sequence of tag names + nesting depth + de-noised CSS classes (WordPress-specific cruft like `vc_*`, `wpb_*`, `nd_options_*`, locale slot ids, post-id classes are stripped before hashing). Pages with the same fingerprint share a cluster. On a typical WordPress site this collapses 700+ pages into 4–8 clusters.
+
+The fingerprint is also language-aware: the language prefix from the URL path or `<html lang>` is prepended to the hash so a French blog post and an English one don't share a template unless explicitly opted in.
+
+### 2. Match — deterministic, no LLM
+
+For every page, before any LLM is touched, the build runs a **deterministic match check** against the existing template library:
+
+- **Exact fingerprint match** → reuse the cluster's template directly. Zero LLM cost.
+- **Fuzzy match** (Jaccard similarity ≥ 0.7 on tag bigrams of the de-noised skeleton) → reuse the closest cluster's template; the slot extractor adapts to small structural variations.
+- **No match** → divergent page. Trigger the synthesis loop (step 3) to produce a new template, which joins the library and is reused on the next matching page.
+
+This is why incremental runs over a stable WP site are essentially free: a new article with the same blog-post shape as 200 existing ones reuses their template — only its content is extracted and injected.
+
+### 3. Synthesize — vision-first, only on cluster representatives or divergent pages
+
+For each cluster (or each divergent page), one LLM call produces an optimized template **from the visual appearance of the page, not from its HTML**. The LLM is never given full page HTML — that's expensive (~240k tokens for a 1 MB WP page), noisy (theme classes, inline styles, third-party widgets), and biases the model toward replicating the WordPress soup it should be replacing.
+
+Concretely:
+
+1. **Render** the representative page with **Playwright** (headless Chromium) at three viewports — mobile (390 × 844), tablet (768 × 1024), desktop (1440 × 900). Screenshots go to `tmp/screenshots/`.
+2. **Detect slots** — a deterministic cheerio pre-pass walks the original DOM and emits the list of named slots (`title`, `hero_image`, `breadcrumbs`, `body`, `gallery`, `cta`, …) plus a stable CSS selector for each. This is the **content contract** between the template and the original page. The LLM receives only the slot names and their semantic role, never the raw HTML or the actual text. See [Slot detection — separating content from chrome](#slot-detection--separating-content-from-chrome) below for how the detector decides what's a slot.
+3. **Generate** — the vision-capable LLM (Sonnet 4.6 / Opus 4.7 / GPT-5 / Gemini 2.5) receives the screenshots + the slot list and produces a clean modern HTML/CSS template *from scratch* with `{{slot}}` placeholders. No WordPress class names, no inline `<style>` soup.
+4. **Render-diff loop** — the candidate template is rendered with placeholder content, screenshotted at the same viewports, and compared pixel-by-pixel against the originals (SSIM ≥ 0.95 *and* pixel-delta < 2%). On miss, the diff image is fed back to the LLM with "regions still off: …" annotations. Repeat up to N iterations (default 5).
+5. **Persist** — once converged, the template is written to `output/templates/<cluster-id>.html` and `_manifest.json` records the slot → selector mapping.
+
+**Why visual rather than textual** — a screenshot says in ~50–200 KB everything the LLM needs about layout, hierarchy, spacing, color, and emphasis. The same page as HTML is 5–10× larger and full of distractions that pull the model toward "preserve this `<div>` because it has a class I don't recognize" rather than "produce a clean equivalent of what I see".
+
+**Local mode** uses the [Playwright MCP](https://github.com/microsoft/playwright-mcp) server (configured in [`.mcp.json`](.mcp.json)) so the Claude Code agent drives the render-diff loop autonomously through MCP tool calls. **API mode** drives the loop from Node — Playwright invoked directly via its Node API, screenshots sent as image inputs to the chosen provider through the Vercel AI SDK.
+
+**Failure handling** — if the visual loop doesn't converge (LLM error, max iterations exceeded, missing vision support), the build logs the failure and falls back to a **passthrough template** that wraps the original `<body>` content with the slot markers extracted in step 2. The rest of the pipeline (image variants, CSS purging, preload hints, refinement) still runs on the page. The pipeline never aborts mid-build.
+
+### 4. Extract & fill — deterministic, no LLM
+
+For every page (cluster representative or otherwise), the deterministic extractor:
+
+1. Reads the original HTML.
+2. Pulls each slot's value via the cheerio selector recorded in `_manifest.json` — verbatim text, with attributes and inline formatting preserved.
+3. Pours the values into the matched template, replacing `{{slot}}` placeholders.
+4. Splices the SEO `<head>` block (`<title>`, meta description, OpenGraph, Twitter, canonical, hreflang, JSON-LD) byte-for-byte from the original into the filled template's `<head>`.
+
+**No LLM call per page, ever, in the steady state.** The visual loop runs only for cluster representatives and divergent pages — typically 5–10 calls for a site with 700+ pages, no matter how many times you re-run `build`.
+
+### Slot detection — separating content from chrome
+
+The hardest question in template synthesis is *which DOM nodes are content (slots, varying per page) and which are chrome (static, shared across the cluster)?*. The slot detector composes four signals, ordered from most reliable to most heuristic. The first three are deterministic; the fourth is a fallback only used when the first three find nothing.
+
+**1. Intra-cluster differential — the dominant signal.** A cluster always contains ≥ 2 pages with the same structural fingerprint. The detector dom-diffs them node-by-node:
+
+- A node whose text and attributes are **identical across every page in the cluster** is chrome (header, nav, footer, sidebar widgets, cookie banner, copyright). It's emitted as a literal in the template, not a slot.
+- A node that **varies between pages** is content. It becomes a named slot, with the cheerio selector that locates it.
+
+On a 543-article blog cluster the WPML language switcher, primary menu, footer, and "back to top" widget appear identically everywhere — reliably classified as chrome without any heuristic. Only the genuinely page-specific blocks become slots.
+
+**2. Explicit semantic markers.** WordPress with Yoast + a modern theme already declares the canonical content via:
+
+- **OpenGraph / meta** — `og:title`, `og:description`, `og:image`, `article:published_time`, `article:author`, `article:section`. Gold-standard: pre-named slots locatable without any inference.
+- **JSON-LD `<script type="application/ld+json">`** — `Article.headline`, `Article.articleBody`, `BreadcrumbList`, `Person`, `ImageObject`. Same role for richer types.
+- **Microdata / `itemprop`** when present.
+
+When these markers exist they're trusted directly — no need to guess.
+
+**3. HTML5 semantic structure.** `<main>`, `<article>`, `<section>` are content zones; `<nav>`, `<aside>`, `<header role="banner">`, `<footer>` are chrome zones. The detector restricts slot candidates to content zones and treats varying nodes inside chrome zones as edge cases (e.g. a "current language" flag inside `<nav>` that differs per locale — kept as chrome with a tiny `{{lang}}` slot).
+
+**4. DOM heuristics (fallback only).** When the three signals above find nothing — old themes without semantic tags, no OG/JSON-LD, no microdata — the detector applies a small named heuristic table:
+
+- First `<h1>` inside `<main>` → `title`.
+- First `<img>` inside `<main>` → `hero_image`.
+- Direct `<p>` children of `<article>` → `body`.
+- `.breadcrumbs`, `[itemtype*=BreadcrumbList]`, `nav[aria-label*=breadcrumb]` → `breadcrumbs`.
+- `<time datetime>` → `published_time`.
+- `[rel=author]`, `.author`, `.byline` → `author`.
+
+These heuristics are explicit, scoped, and disablable. They never override signals 1–3.
+
+**The render-diff loop is the arbiter.** If the slot detector misses a region (a sidebar block that *does* vary per page but the diff didn't catch because cluster size was too small, for instance), the synthesis loop's pixel-diff will surface it: the screenshot of the filled template shows an empty or misaligned zone where the original had content. The LLM is fed the diff image with "regions still off" annotations and the missing slot is added to the manifest before the next iteration. The slot detector and the render-diff loop are complementary safety nets.
+
+### Why text fidelity is preserved
+
+A common worry with vision-driven synthesis is "the LLM will paraphrase or drop content". It cannot, because **the LLM never sees the content**. Slot values are extracted by cheerio from the original DOM and injected into the template by string replacement. The visual loop converges on *layout*; the text always comes from the source page, byte-for-byte. The refinement agent (step 7 of the pipeline, separate command) is the only stage that may rewrite visible body text, and it operates on the filled output — opt-in, scoped to body copy, and explicitly forbidden from touching SEO-sensitive elements.
 
 ## Output structure
 
@@ -155,6 +231,8 @@ CRAWL_RESPECT_ROBOTS=true     # honor robots.txt
 - **HTML**: `cheerio` + `parse5`
 - **CSS**: `lightningcss` + `beasties` (critical CSS)
 - **Images**: `sharp` (WebP/AVIF)
+- **Visual rendering**: `playwright` (Chromium, headless) for the vision-first template synthesis loop, plus the `diff` command's regression check
+- **Image diff**: `pixelmatch` + `pngjs` (SSIM/pixel-delta against the original)
 - **HTTP server**: `hono`
 - **Tests**: `vitest`
 - **LLM**: two interchangeable modes, selected via `.env`

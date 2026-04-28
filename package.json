@@ -4,7 +4,7 @@
   "description": "Turn a website into an ultra-optimized static cache for Google PageSpeed.",
   "type": "module",
   "bin": {
-    "claude-press": "./dist/cli.js"
+    "claude-press": "./bin/claude-press"
   },
   "scripts": {
     "dev": "tsx src/cli.ts",

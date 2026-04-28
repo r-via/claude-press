@@ -4,6 +4,8 @@ dist/
 .env.local
 output/
 coverage/
+tmp/
+.playwright-mcp/
 *.log
 .DS_Store
 .venv/
