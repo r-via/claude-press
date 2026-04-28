@@ -15,6 +15,7 @@ import {
   extractSeoHeadNodes,
   injectSeoHeadNodes,
 } from "../core/extractor.js";
+import { generateResponsiveImages, rewriteImgToPicture } from "../core/images.js";
 
 interface BuildOptions {
   force: string[];
@@ -98,6 +99,19 @@ export function registerBuild(program: Command): void {
       for (const f of assetResult.failures) {
         console.warn(`    ! ${f.url}: ${f.error}`);
       }
+
+      console.log(`  Generating responsive image variants...`);
+      const imageManifest = await generateResponsiveImages(
+        assetResult.manifest,
+        outputDir,
+        { log: (m) => console.warn(`    ${m}`) },
+      );
+      const imageCount = Object.keys(imageManifest).length;
+      const variantCount = Object.values(imageManifest).reduce(
+        (n, v) => n + v.length,
+        0,
+      );
+      console.log(`  → ${imageCount} images, ${variantCount} variants generated\n`);
 
       console.log(`  Rewriting asset URLs in pages...`);
       let rewrittenPages = 0;
@@ -210,5 +224,30 @@ export function registerBuild(program: Command): void {
         console.log(`     ${cid}: ${n} pages filled`);
       }
       console.log(`  → ${totalFilled} pages rebuilt from templates\n`);
+
+      if (imageCount > 0) {
+        console.log(`  Rewriting <img> → <picture> on output pages...`);
+        let pictureRewritten = 0;
+        const finalPagePaths: string[] = [];
+        try {
+          const existing = await readdir(resolve(outputDir, "pages"), { recursive: true });
+          for (const name of existing) {
+            if (typeof name === "string" && name.endsWith("index.html")) {
+              finalPagePaths.push(resolve(outputDir, "pages", name));
+            }
+          }
+        } catch {
+          /* no pages dir */
+        }
+        for (const p of finalPagePaths) {
+          const html = await readFile(p, "utf8");
+          const next = rewriteImgToPicture(html, imageManifest);
+          if (next !== html) {
+            await writeFile(p, next);
+            pictureRewritten++;
+          }
+        }
+        console.log(`  → ${pictureRewritten} pages updated with <picture>\n`);
+      }
     });
 }
