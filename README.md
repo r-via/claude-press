@@ -144,52 +144,15 @@ CRAWL_RESPECT_ROBOTS=true     # honor robots.txt
 
 ### LLM configuration
 
-```bash
-# .env
+Two modes (`LLM_MODE=local|api`), configured via `.env`. API mode uses `provider/model` routing (e.g. `anthropic/claude-haiku-4-5`) through the Vercel AI SDK. Local mode routes all calls through the Claude Agent SDK with no API key needed.
 
-# Mode: "local" (Claude Code SDK) or "api" (Vercel AI SDK)
-LLM_MODE=local
-
-# --- API mode only (ignored when LLM_MODE=local) ---
-# Models are specified as "provider/model" — provider is mandatory.
-OPTIMIZER_MODEL=anthropic/claude-haiku-4-5     # fast/cheap for HTML optimization
-REFINER_MODEL=anthropic/claude-opus-4-7        # stronger for textual refinement
-
-# Examples for other providers:
-# OPTIMIZER_MODEL=openai/gpt-5-mini
-# REFINER_MODEL=google/gemini-2.5-pro
-# REFINER_MODEL=mistral/mistral-large-latest
-# REFINER_MODEL=ollama/llama3.1:70b
-
-# Provider credentials (only the ones you actually use)
-ANTHROPIC_API_KEY=...
-# OPENAI_API_KEY=...
-# GOOGLE_GENERATIVE_AI_API_KEY=...
-# MISTRAL_API_KEY=...
-# OLLAMA_BASE_URL=http://localhost:11434
-```
-
-The `provider/model` convention (inspired by [`anatoly`](../anatoly)) makes the routing explicit: the prefix selects which Vercel AI SDK provider package to load, the suffix is passed through to that provider untouched. Adding a new provider is purely a matter of installing its `@ai-sdk/<provider>` package and registering it in the transport registry — no other code changes.
-
-In **local mode**, all LLM calls — both the optimizer and the refinement agent — are routed through the Claude Agent SDK, so you only need an active Claude Code login. In **API mode**, calls go through the Vercel AI SDK and any supported provider works.
+→ Full reference: [SPEC/archive/001-llm-configuration.md](SPEC/archive/001-llm-configuration.md)
 
 ## Asset pipeline
 
-**Images** — the crawler always downloads the highest-resolution source available (e.g. WordPress's full-size original, not the auto-generated thumbnails). From that single source, `sharp` generates a responsive set on the fly:
+Images, CSS, JS, and fonts are each optimized per-asset-type: responsive image sets (AVIF/WebP/fallback at multiple widths via `sharp`), per-page CSS purging + critical inlining (`lightningcss` + `beasties`), JS minification + dead-code removal (`terser`), and font subsetting to used glyphs (WOFF2).
 
-- multiple widths (e.g. 480, 768, 1024, 1440, 1920px),
-- two modern formats (AVIF + WebP) with a JPEG/PNG fallback,
-- emitted as a proper `<picture>` / `srcset` so the browser picks the right one per device.
-
-**CSS** — original stylesheets are downloaded once, then per-page processed:
-
-- `lightningcss` purges rules unused on that page,
-- `beasties` extracts the above-the-fold critical CSS and inlines it in `<head>`,
-- the rest is loaded async to avoid render-blocking.
-
-**JS** — `terser` minifies, dead code is dropped, third-party scripts flagged as non-essential are deferred or removed.
-
-**Fonts** — subset to actually-used glyphs, served as WOFF2 with `font-display: swap`.
+→ Full detail: [SPEC/archive/002-asset-pipeline.md](SPEC/archive/002-asset-pipeline.md)
 
 ## Optimizations applied
 
