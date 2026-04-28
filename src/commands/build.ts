@@ -3,6 +3,7 @@ import { resolve } from "node:path";
 import { mkdir, access } from "node:fs/promises";
 import { expandSitemap } from "../core/sitemap.js";
 import { loadConfig } from "../core/config.js";
+import { downloadPages } from "../core/crawler.js";
 
 interface BuildOptions {
   force: string[];
@@ -45,7 +46,7 @@ export function registerBuild(program: Command): void {
       console.log(`  → ${entries.length} URLs\n`);
 
       const forceSet = new Set(opts.force);
-      let toBuild = 0;
+      const toFetch: string[] = [];
       let skipped = 0;
       for (const entry of entries) {
         const u = new URL(entry.loc);
@@ -54,11 +55,18 @@ export function registerBuild(program: Command): void {
           skipped++;
           continue;
         }
-        toBuild++;
+        toFetch.push(entry.loc);
       }
-      console.log(`  ${toBuild} to build, ${skipped} cached\n`);
+      console.log(`  ${toFetch.length} to build, ${skipped} cached\n`);
 
-      // TODO: download → cluster → synthesize templates → fill → asset pipeline
-      console.log(`  (pipeline not yet implemented — scaffold only)\n`);
+      console.log(`  Downloading pages...`);
+      const { manifest, failures } = await downloadPages(toFetch, outputDir, config.crawler);
+      console.log(`  → ${manifest.length} fetched, ${failures.length} failed\n`);
+      for (const f of failures) {
+        console.warn(`    ! ${f.url}: ${f.error}`);
+      }
+
+      // TODO: cluster → synthesize templates → fill → asset pipeline
+      console.log(`  (cluster + template pipeline not yet implemented)\n`);
     });
 }
