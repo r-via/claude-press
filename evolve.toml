@@ -1,0 +1,45 @@
+# evolve.toml — project-level configuration for claude-press
+# See evolve's SPEC.md § "Config resolution" for the full field list.
+# Resolution order: CLI flags → env vars → this file → pyproject.toml → defaults.
+
+# How evolve verifies a round. Chained so a type regression also fails.
+check = "npm run typecheck && npm test"
+
+# Max evolution rounds per `evolve start` invocation.
+rounds = 50
+
+# Hard ceiling (seconds) on the check command. If typecheck+vitest
+# exceed this, the round fires its post-check diagnostic and the
+# agent is told to investigate slowness rather than bump the budget.
+timeout = 180
+
+# Model used by the implement/draft/review agents.
+# Override per-run with EVOLVE_MODEL=claude-sonnet-4-6 evolve start .
+model = "claude-opus-4-7"
+
+# Let the agent run `npm install <pkg>` to satisfy [needs-package]
+# backlog items. Set to false to freeze the dependency set.
+allow_installs = true
+
+# Capture rendered TUI frames as PNGs in .evolve/runs/<session>/frames/.
+# Requires evolve installed with the [vision] extra (cairosvg).
+capture_frames = false
+
+# Spec file evolve converges to. README.md is fine until the project
+# grows large enough to warrant a dense SPEC.md (see evolve's README
+# § "Split user docs from the spec on large projects").
+spec = "README.md"
+
+# Advisory threshold (days) before evolve warns the README is stale
+# relative to the code. 0 disables the advisory.
+readme_stale_threshold_days = 30
+
+# ---------------------------------------------------------------------
+# Lifecycle hooks — fire-and-forget shell commands, 30 s timeout each.
+# Env vars set by evolve: EVOLVE_SESSION, EVOLVE_ROUND, EVOLVE_STATUS.
+# Uncomment to enable.
+# ---------------------------------------------------------------------
+# [hooks]
+# on_round_end = 'echo "Round $EVOLVE_ROUND ($EVOLVE_STATUS) — session $EVOLVE_SESSION"'
+# on_converged = 'notify-send "claude-press converged"'
+# on_error     = 'notify-send "claude-press evolve error"'
