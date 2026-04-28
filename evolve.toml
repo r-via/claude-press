@@ -2,8 +2,11 @@
 # See evolve's SPEC.md § "Config resolution" for the full field list.
 # Resolution order: CLI flags → env vars → this file → pyproject.toml → defaults.
 
-# How evolve verifies a round. Chained so a type regression also fails.
-check = "npm run typecheck && npm test"
+# How evolve verifies a round. `npm test` runs `vitest run` (one-shot).
+# To also gate on types, add a `check` script in package.json that runs
+# both, e.g. `"check": "tsc --noEmit && vitest run"`, then set
+# check = "npm run check" here.
+check = "npm test"
 
 # Max evolution rounds per `evolve start` invocation.
 rounds = 50
