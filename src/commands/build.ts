@@ -1,10 +1,11 @@
 import type { Command } from "commander";
-import { resolve } from "node:path";
-import { mkdir, access } from "node:fs/promises";
+import { relative, resolve } from "node:path";
+import { mkdir, access, readFile, writeFile, readdir } from "node:fs/promises";
 import { expandSitemap } from "../core/sitemap.js";
 import { loadConfig } from "../core/config.js";
 import { downloadPages } from "../core/crawler.js";
 import { discoverAssets, downloadAssets, type AssetRef } from "../core/assets.js";
+import { rewriteHtmlAssetUrls, rewriteCssUrls } from "../core/rewriter.js";
 
 interface BuildOptions {
   force: string[];
@@ -89,7 +90,54 @@ export function registerBuild(program: Command): void {
         console.warn(`    ! ${f.url}: ${f.error}`);
       }
 
-      // TODO: cluster → synthesize templates → fill → URL rewriting
+      console.log(`  Rewriting asset URLs in pages...`);
+      let rewrittenPages = 0;
+      let unmatchedCount = 0;
+      for (const entry of manifest) {
+        const html = await readFile(entry.localPath, "utf8");
+        const pageLocalPath = relative(outputDir, entry.localPath).split(/[\\/]/).join("/");
+        const next = rewriteHtmlAssetUrls(html, entry.url, assetResult.manifest, {
+          pageLocalPath,
+          onUnmatched: () => {
+            unmatchedCount++;
+          },
+        });
+        if (next !== html) {
+          await writeFile(entry.localPath, next);
+          rewrittenPages++;
+        }
+      }
+      console.log(`  → ${rewrittenPages} pages rewritten (${unmatchedCount} unmatched refs)\n`);
+
+      console.log(`  Rewriting asset URLs in CSS...`);
+      let rewrittenCss = 0;
+      const cssDir = resolve(outputDir, "assets", "css");
+      const reverseManifest = new Map<string, string>();
+      for (const [origUrl, localPath] of Object.entries(assetResult.manifest)) {
+        reverseManifest.set(localPath, origUrl);
+      }
+      try {
+        const cssFiles = await readdir(cssDir);
+        for (const name of cssFiles) {
+          const localRel = `assets/css/${name}`;
+          const origUrl = reverseManifest.get(localRel);
+          if (!origUrl) continue;
+          const absPath = resolve(cssDir, name);
+          const css = await readFile(absPath, "utf8");
+          const next = rewriteCssUrls(css, origUrl, assetResult.manifest, {
+            cssLocalPath: localRel,
+          });
+          if (next !== css) {
+            await writeFile(absPath, next);
+            rewrittenCss++;
+          }
+        }
+      } catch {
+        /* no css dir */
+      }
+      console.log(`  → ${rewrittenCss} CSS files rewritten\n`);
+
+      // TODO: cluster → synthesize templates → fill
       console.log(`  (cluster + template pipeline not yet implemented)\n`);
     });
 }
