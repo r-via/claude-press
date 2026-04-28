@@ -19,6 +19,7 @@ import { generateResponsiveImages, rewriteImgToPicture } from "../core/images.js
 import { purgePageCss, inlineCriticalCss } from "../core/css.js";
 import { minifyJsAssets, deferNonEssentialScripts } from "../core/js.js";
 import { subsetFonts, injectFontDisplaySwap } from "../core/fonts.js";
+import { generateOutputSitemap } from "../core/sitemap-gen.js";
 
 interface BuildOptions {
   force: string[];
@@ -383,5 +384,21 @@ export function registerBuild(program: Command): void {
       console.log(
         `  → font-display: swap injected into ${cssFontDisplayUpdated} CSS files, ${htmlFontDisplayUpdated} HTML pages\n`,
       );
+
+      console.log(`  Regenerating output sitemap.xml...`);
+      const sitemapBaseUrl = new URL(sitemap).origin;
+      await generateOutputSitemap(outputDir, sitemapBaseUrl);
+      let urlCount = 0;
+      try {
+        const existing = await readdir(resolve(outputDir, "pages"), {
+          recursive: true,
+        });
+        for (const name of existing) {
+          if (typeof name === "string" && name.endsWith("index.html")) urlCount++;
+        }
+      } catch {
+        /* no pages dir */
+      }
+      console.log(`  → sitemap.xml written (${urlCount} URLs)\n`);
     });
 }
