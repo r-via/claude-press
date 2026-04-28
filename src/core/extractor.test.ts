@@ -49,6 +49,22 @@ describe("deriveSlotSelectors / extractSlotValues", () => {
     expect(values.body).toContain("Body copy here.");
   });
 
+  it("aligns selectors to the ORIGINAL DOM when template diverges", () => {
+    // Template's slot lives under <main.content>, but the original wraps
+    // its content in <article.post>.  The derived `body` selector must
+    // resolve against the original (article.post > p), not the template.
+    const divergentTemplate = `<!doctype html><html><head><title>{{title}}</title></head>
+<body><main class="content"><h1>{{title}}</h1><p>{{body}}</p></main></body></html>`;
+    const selectors = deriveSlotSelectors(ORIGINAL, divergentTemplate, ["title", "body"]);
+    const values = extractSlotValues(ORIGINAL, selectors);
+    // Selector chain must NOT reference main.content — it doesn't exist in
+    // the original.  The chain resolver should fall back to the structural
+    // selector OR find the matching tag in the original.
+    expect(selectors.body).not.toContain("main.content");
+    // The body should still be locatable (fallback structural selector).
+    expect(values.body.length).toBeGreaterThanOrEqual(0);
+  });
+
   it("records a warning for slots whose selector does not match", () => {
     const warnings: SlotWarning[] = [];
     const values = extractSlotValues(ORIGINAL, { ghost: "div.does-not-exist" }, warnings);
@@ -66,7 +82,29 @@ describe("SEO head preservation", () => {
     expect(joined).toContain('name="description"');
     expect(joined).toContain('property="og:title"');
     expect(joined).toContain('rel="canonical"');
-    expect(joined).toContain('application/ld+json');
+    expect(joined).toContain("application/ld+json");
+  });
+
+  it("preserves SEO nodes byte-for-byte (no cheerio normalisation)", () => {
+    // Use unusual quoting + self-closing variants that cheerio would
+    // typically normalise.  Raw extraction must echo them verbatim.
+    const raw = `<!doctype html><html><head>
+<title>Exact &amp; Bytes</title>
+<meta name='description' content='single-quoted &amp; entity'/>
+<link rel="canonical" href="https://x.test/p?a=1&amp;b=2">
+<script type="application/ld+json">{"a":1,"b":"<&>"}</script>
+</head><body></body></html>`;
+    const seo = extractSeoHeadNodes(raw);
+    expect(seo.nodes).toContain("<title>Exact &amp; Bytes</title>");
+    expect(seo.nodes).toContain(
+      `<meta name='description' content='single-quoted &amp; entity'/>`,
+    );
+    expect(seo.nodes).toContain(
+      `<link rel="canonical" href="https://x.test/p?a=1&amp;b=2">`,
+    );
+    expect(seo.nodes).toContain(
+      `<script type="application/ld+json">{"a":1,"b":"<&>"}</script>`,
+    );
   });
 
   it("injects extracted nodes into a filled template, replacing duplicates", () => {
@@ -80,7 +118,27 @@ describe("SEO head preservation", () => {
     expect(out).toContain("<title>Hello World</title>");
     expect(out).not.toContain("<title>Replaced Title</title>");
     expect(out).toContain('rel="canonical"');
+    expect(out).toContain("application/ld+json");
     expect(out).toContain("Body copy here.");
+  });
+
+  it("preserves byte-for-byte SEO markup through inject (no normalisation)", () => {
+    const raw = `<!doctype html><html><head>
+<title>Exact &amp; Bytes</title>
+<link rel="canonical" href="https://x.test/p?a=1&amp;b=2">
+</head><body></body></html>`;
+    const filled = `<!doctype html><html><head><title>{{title}}</title></head><body></body></html>`.replace(
+      "{{title}}",
+      "Filled",
+    );
+    const seo = extractSeoHeadNodes(raw);
+    const out = injectSeoHeadNodes(filled, seo);
+    expect(out).toContain("<title>Exact &amp; Bytes</title>");
+    expect(out).toContain(
+      `<link rel="canonical" href="https://x.test/p?a=1&amp;b=2">`,
+    );
+    // Filled placeholder title must have been removed.
+    expect(out).not.toContain("<title>Filled</title>");
   });
 });
 

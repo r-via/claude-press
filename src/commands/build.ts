@@ -180,18 +180,29 @@ export function registerBuild(program: Command): void {
       const fillCounts = new Map<string, number>();
       for (const tpl of library.templates) {
         const tplPath = resolve(outputDir, "templates", tpl.file);
-        const templateHtml = await readFile(tplPath, "utf8");
+        let templateHtml: string;
+        try {
+          templateHtml = await readFile(tplPath, "utf8");
+        } catch (err) {
+          console.warn(`    ! template ${tpl.file} unreadable, skipping cluster: ${(err as Error).message}`);
+          fillCounts.set(tpl.clusterId, 0);
+          continue;
+        }
         let perTpl = 0;
         for (const pagePath of tpl.pages) {
-          const originalHtml = await readFile(pagePath, "utf8");
-          const selectors = deriveSlotSelectors(originalHtml, templateHtml, tpl.slots);
-          const values = extractSlotValues(originalHtml, selectors);
-          const filled = fillTemplate(templateHtml, values);
-          const seo = extractSeoHeadNodes(originalHtml);
-          const out = injectSeoHeadNodes(filled, seo);
-          await writeFile(pagePath, out);
-          perTpl++;
-          totalFilled++;
+          try {
+            const originalHtml = await readFile(pagePath, "utf8");
+            const selectors = deriveSlotSelectors(originalHtml, templateHtml, tpl.slots);
+            const values = extractSlotValues(originalHtml, selectors);
+            const filled = fillTemplate(templateHtml, values);
+            const seo = extractSeoHeadNodes(originalHtml);
+            const out = injectSeoHeadNodes(filled, seo);
+            await writeFile(pagePath, out);
+            perTpl++;
+            totalFilled++;
+          } catch (err) {
+            console.warn(`    ! ${pagePath}: ${(err as Error).message}`);
+          }
         }
         fillCounts.set(tpl.clusterId, perTpl);
       }
