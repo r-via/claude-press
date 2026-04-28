@@ -3,7 +3,7 @@ import { relative, resolve } from "node:path";
 import { mkdir, access, readFile, writeFile, readdir } from "node:fs/promises";
 import { expandSitemap } from "../core/sitemap.js";
 import { loadConfig } from "../core/config.js";
-import { downloadPages } from "../core/crawler.js";
+import { downloadPages, type RobotsCache } from "../core/crawler.js";
 import { discoverAssets, downloadAssets, type AssetRef } from "../core/assets.js";
 import {
   rewriteHtmlAssetUrls,
@@ -90,7 +90,12 @@ export function registerBuild(program: Command): void {
       console.log(`  ${toFetch.length} to build, ${skipped} cached\n`);
 
       console.log(`  Downloading pages...`);
-      const { manifest, failures } = await downloadPages(toFetch, outputDir, config.crawler);
+      // Shared robots.txt cache → /robots.txt is fetched once per host
+      // even though pages and assets each call out separately.
+      const robotsCache: RobotsCache = new Map();
+      const { manifest, failures } = await downloadPages(toFetch, outputDir, config.crawler, {
+        robotsCache,
+      });
       console.log(`  → ${manifest.length} fetched, ${failures.length} failed\n`);
       for (const f of failures) {
         console.warn(`    ! ${f.url}: ${f.error}`);
@@ -110,7 +115,9 @@ export function registerBuild(program: Command): void {
       console.log(`  → ${allRefs.length} unique assets discovered`);
 
       console.log(`  Downloading assets...`);
-      const assetResult = await downloadAssets(allRefs, outputDir, config.crawler);
+      const assetResult = await downloadAssets(allRefs, outputDir, config.crawler, {
+        robotsCache,
+      });
       console.log(
         `  → ${Object.keys(assetResult.manifest).length} fetched, ${assetResult.failures.length} failed\n`,
       );

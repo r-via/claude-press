@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import * as cheerio from "cheerio";
 import { fetch as undiciFetch } from "undici";
 import type { CrawlerConfig } from "./config.js";
+import { getRobotsForHost, type RobotsCache } from "./crawler.js";
 
 export type AssetType = "css" | "js" | "img" | "fonts";
 
@@ -34,6 +35,8 @@ export interface DownloadAssetsOptions {
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
   log?: (msg: string) => void;
+  /** Shared robots.txt cache (across pages + assets). Created if absent. */
+  robotsCache?: RobotsCache;
 }
 
 export interface DownloadAssetsResult {
@@ -208,6 +211,7 @@ export async function downloadAssets(
   const now = options.now ?? Date.now;
   const sleep = options.sleep ?? defaultSleep;
   const log = options.log ?? ((m: string) => console.log(m));
+  const robotsCache: RobotsCache = options.robotsCache ?? new Map();
 
   const manifest: AssetManifest = {};
   const failures: { url: string; error: string }[] = [];
@@ -215,6 +219,49 @@ export async function downloadAssets(
   // Deduplicate by absolute URL (refs may already be deduped, but be safe).
   const unique = new Map<string, AssetRef>();
   for (const r of refs) if (!unique.has(r.url)) unique.set(r.url, r);
+
+  // robots.txt enforcement (README § Crawler etiquette).  Reuses the same
+  // robotsCache as downloadPages when callers thread it through, so each
+  // host's /robots.txt is fetched at most once per build.  The asset
+  // fetchImpl returns `arrayBuffer()` only; adapt it to a text-fetch
+  // shape that getRobotsForHost expects.
+  const robotsFetch = async (
+    url: string,
+    init?: { headers?: Record<string, string> },
+  ): Promise<{ ok: boolean; status: number; statusText: string; text(): Promise<string> }> => {
+    const r = await fetchImpl(url, init);
+    return {
+      ok: r.ok,
+      status: r.status,
+      statusText: r.statusText,
+      text: async () => Buffer.from(await r.arrayBuffer()).toString("utf8"),
+    };
+  };
+  if (config.respectRobots) {
+    const allowed = new Map<string, AssetRef>();
+    let dropped = 0;
+    for (const [url, ref] of unique) {
+      let host: string;
+      let scheme: string;
+      try {
+        const u = new URL(url);
+        host = u.host;
+        scheme = u.protocol;
+      } catch {
+        allowed.set(url, ref);
+        continue;
+      }
+      const robot = await getRobotsForHost(host, scheme, config.userAgent, robotsCache, robotsFetch);
+      if (!robot || robot.isAllowed(url, config.userAgent) !== false) {
+        allowed.set(url, ref);
+      } else {
+        dropped++;
+      }
+    }
+    if (dropped > 0) log(`  → ${dropped} assets disallowed by robots.txt`);
+    unique.clear();
+    for (const [k, v] of allowed) unique.set(k, v);
+  }
 
   const concurrency = Math.max(1, config.concurrency);
   let inFlight = 0;

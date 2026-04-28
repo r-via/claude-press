@@ -2,7 +2,13 @@ import { describe, it, expect } from "vitest";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { downloadPages, urlToLocalPath, type FetchLike } from "./crawler.js";
+import {
+  downloadPages,
+  urlToLocalPath,
+  fetchRobotsTxt,
+  filterAllowedUrls,
+  type FetchLike,
+} from "./crawler.js";
 import type { CrawlerConfig } from "./config.js";
 
 const baseConfig: CrawlerConfig = {
@@ -203,6 +209,135 @@ describe("downloadPages — error handling", () => {
       expect(result.manifest).toHaveLength(0);
       expect(result.failures).toHaveLength(1);
       expect(result.failures[0]?.error).toMatch(/network down/);
+    });
+  });
+});
+
+describe("fetchRobotsTxt", () => {
+  it("returns body on 200", async () => {
+    const fetchImpl: FetchLike = async () => ({
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      text: async () => "User-agent: *\nDisallow: /private/",
+    });
+    const body = await fetchRobotsTxt("https://x.example", "ua/1", fetchImpl);
+    expect(body).toContain("Disallow");
+  });
+
+  it("returns null on 404", async () => {
+    const fetchImpl: FetchLike = async () => ({
+      ok: false,
+      status: 404,
+      statusText: "Not Found",
+      text: async () => "",
+    });
+    const body = await fetchRobotsTxt("https://x.example", "ua/1", fetchImpl);
+    expect(body).toBeNull();
+  });
+
+  it("returns null on network error", async () => {
+    const fetchImpl: FetchLike = async () => {
+      throw new Error("ECONNRESET");
+    };
+    const body = await fetchRobotsTxt("https://x.example", "ua/1", fetchImpl);
+    expect(body).toBeNull();
+  });
+});
+
+describe("filterAllowedUrls", () => {
+  const robotsTxt = `User-agent: *
+Disallow: /private/
+Disallow: /admin
+`;
+
+  it("drops URLs disallowed for the user-agent", () => {
+    const urls = [
+      "https://x.example/",
+      "https://x.example/private/secret",
+      "https://x.example/blog/",
+      "https://x.example/admin",
+    ];
+    const allowed = filterAllowedUrls(urls, robotsTxt, "claude-press/1.0");
+    expect(allowed).toEqual([
+      "https://x.example/",
+      "https://x.example/blog/",
+    ]);
+  });
+
+  it("returns all URLs unchanged when robots.txt is empty", () => {
+    const urls = ["https://x.example/", "https://x.example/anywhere"];
+    const allowed = filterAllowedUrls(urls, "", "ua");
+    expect(allowed).toEqual(urls);
+  });
+});
+
+describe("downloadPages — robots.txt enforcement", () => {
+  it("skips URLs disallowed by robots.txt when respectRobots is true", async () => {
+    await withTmpDir(async (dir) => {
+      const seen: string[] = [];
+      const fetchImpl: FetchLike = async (url) => {
+        seen.push(url);
+        if (url.endsWith("/robots.txt")) {
+          return {
+            ok: true,
+            status: 200,
+            statusText: "OK",
+            text: async () => "User-agent: *\nDisallow: /private/\n",
+          };
+        }
+        return { ok: true, status: 200, statusText: "OK", text: async () => "ok" };
+      };
+      const urls = [
+        "https://x.example/public/",
+        "https://x.example/private/secret/",
+      ];
+      const result = await downloadPages(
+        urls,
+        dir,
+        { ...baseConfig, respectRobots: true },
+        { fetchImpl, log: silent },
+      );
+      expect(result.manifest).toHaveLength(1);
+      expect(result.manifest[0]?.url).toBe("https://x.example/public/");
+      expect(seen).toContain("https://x.example/robots.txt");
+      expect(seen).not.toContain("https://x.example/private/secret/");
+    });
+  });
+
+  it("crawls every URL and never fetches robots.txt when respectRobots is false", async () => {
+    await withTmpDir(async (dir) => {
+      const seen: string[] = [];
+      const fetchImpl: FetchLike = async (url) => {
+        seen.push(url);
+        return { ok: true, status: 200, statusText: "OK", text: async () => "ok" };
+      };
+      const result = await downloadPages(
+        ["https://x.example/", "https://x.example/private/secret/"],
+        dir,
+        { ...baseConfig, respectRobots: false },
+        { fetchImpl, log: silent },
+      );
+      expect(result.manifest).toHaveLength(2);
+      expect(seen.some((u) => u.endsWith("/robots.txt"))).toBe(false);
+    });
+  });
+
+  it("falls back to allow-all when robots.txt fetch fails", async () => {
+    await withTmpDir(async (dir) => {
+      const fetchImpl: FetchLike = async (url) => {
+        if (url.endsWith("/robots.txt")) {
+          return { ok: false, status: 500, statusText: "Server Error", text: async () => "" };
+        }
+        return { ok: true, status: 200, statusText: "OK", text: async () => "ok" };
+      };
+      const result = await downloadPages(
+        ["https://x.example/a/", "https://x.example/b/"],
+        dir,
+        { ...baseConfig, respectRobots: true },
+        { fetchImpl, log: silent },
+      );
+      expect(result.manifest).toHaveLength(2);
     });
   });
 });
