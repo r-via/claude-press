@@ -57,6 +57,59 @@ const IMG_EXTS = new Set([
   ".bmp",
 ]);
 
+/**
+ * Parse a `srcset` attribute value and return the URL of the largest
+ * candidate.  Width descriptors (`Nw`) take precedence — the candidate
+ * with the highest width wins.  If no `w` descriptors are present, the
+ * highest density (`Nx`) wins (bare candidates default to density 1).
+ * If no descriptors are present at all, the first candidate is returned.
+ * Returns `null` for empty/blank/invalid input.
+ */
+export function pickLargestSrcsetCandidate(srcset: string): string | null {
+  if (typeof srcset !== "string") return null;
+  const trimmed = srcset.trim();
+  if (!trimmed) return null;
+  type Cand = { url: string; w?: number; x?: number; idx: number };
+  const cands: Cand[] = [];
+  for (const raw of trimmed.split(",")) {
+    const part = raw.trim();
+    if (!part) continue;
+    const tokens = part.split(/\s+/);
+    const url = tokens[0];
+    if (!url) continue;
+    const cand: Cand = { url, idx: cands.length };
+    for (let i = 1; i < tokens.length; i++) {
+      const tok = tokens[i]!;
+      if (/^\d+(?:\.\d+)?w$/i.test(tok)) {
+        const n = parseInt(tok, 10);
+        if (!Number.isNaN(n)) cand.w = n;
+      } else if (/^\d+(?:\.\d+)?x$/i.test(tok)) {
+        const n = parseFloat(tok);
+        if (!Number.isNaN(n)) cand.x = n;
+      }
+    }
+    cands.push(cand);
+  }
+  if (cands.length === 0) return null;
+  const haveW = cands.some((c) => c.w !== undefined);
+  if (haveW) {
+    let best = cands[0]!;
+    for (const c of cands) {
+      if ((c.w ?? -1) > (best.w ?? -1)) best = c;
+    }
+    return best.url;
+  }
+  const haveX = cands.some((c) => c.x !== undefined);
+  if (haveX) {
+    let best = cands[0]!;
+    for (const c of cands) {
+      if ((c.x ?? 1) > (best.x ?? 1)) best = c;
+    }
+    return best.url;
+  }
+  return cands[0]!.url;
+}
+
 function classifyByExt(url: string): AssetType | undefined {
   try {
     const ext = extname(new URL(url).pathname).toLowerCase();
@@ -133,16 +186,14 @@ export async function discoverAssets(
   $("img[src]").each((_i, el) => push($(el).attr("src"), "img"));
   $("source[src]").each((_i, el) => push($(el).attr("src"), "img"));
 
-  const expandSrcset = (ss: string | undefined, type: AssetType): void => {
+  const pickLargest = (ss: string | undefined, type: AssetType): void => {
     if (!ss) return;
-    for (const part of ss.split(",")) {
-      const candidate = part.trim().split(/\s+/)[0];
-      if (candidate) push(candidate, type);
-    }
+    const winner = pickLargestSrcsetCandidate(ss);
+    if (winner) push(winner, type);
   };
-  $("img[srcset]").each((_i, el) => expandSrcset($(el).attr("srcset"), "img"));
+  $("img[srcset]").each((_i, el) => pickLargest($(el).attr("srcset"), "img"));
   $("source[srcset]").each((_i, el) =>
-    expandSrcset($(el).attr("srcset"), "img"),
+    pickLargest($(el).attr("srcset"), "img"),
   );
 
   // Inline <style> blocks: pick out url(...) refs (typically @font-face).

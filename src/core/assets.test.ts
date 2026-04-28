@@ -5,6 +5,7 @@ import { join } from "node:path";
 import {
   discoverAssets,
   downloadAssets,
+  pickLargestSrcsetCandidate,
   type FetchLike,
   type AssetRef,
 } from "./assets.js";
@@ -63,12 +64,13 @@ describe("discoverAssets", () => {
       expect(byType("img")).toEqual(
         expect.arrayContaining([
           "https://x.example/img/hero.png",
-          "https://x.example/img/hero-480.png",
+          // largest-variant only — the 480w sibling is skipped
           "https://x.example/img/hero-960.png",
           "https://x.example/img/hero.avif",
           "https://x.example/favicon.ico",
         ]),
       );
+      expect(byType("img")).not.toContain("https://x.example/img/hero-480.png");
       expect(byType("fonts")).toEqual(
         expect.arrayContaining([
           "https://x.example/fonts/inter.woff2",
@@ -100,6 +102,62 @@ describe("discoverAssets", () => {
       await writeFile(file, html);
       const refs = await discoverAssets(file, "https://x.example/");
       expect(refs).toHaveLength(0);
+    });
+  });
+});
+
+describe("pickLargestSrcsetCandidate", () => {
+  it("returns largest-width URL for w-descriptor srcset", () => {
+    expect(
+      pickLargestSrcsetCandidate(
+        "/img/a-480.png 480w, /img/a-1024.png 1024w, /img/a-768.png 768w",
+      ),
+    ).toBe("/img/a-1024.png");
+  });
+
+  it("returns highest-density URL for x-descriptor srcset", () => {
+    expect(
+      pickLargestSrcsetCandidate("/img/a.png 1x, /img/a@2x.png 2x, /img/a@3x.png 3x"),
+    ).toBe("/img/a@3x.png");
+  });
+
+  it("returns first candidate for bare-URL srcset", () => {
+    expect(pickLargestSrcsetCandidate("/img/a.png, /img/b.png, /img/c.png")).toBe(
+      "/img/a.png",
+    );
+  });
+
+  it("returns null for empty/blank srcset", () => {
+    expect(pickLargestSrcsetCandidate("")).toBeNull();
+    expect(pickLargestSrcsetCandidate("   ")).toBeNull();
+    expect(pickLargestSrcsetCandidate(",, ,,")).toBeNull();
+  });
+
+  it("prefers w over x when both shapes appear (w wins)", () => {
+    // w-descriptor present anywhere → w-mode classification
+    expect(
+      pickLargestSrcsetCandidate("/a.png 1x, /b.png 800w, /c.png 400w"),
+    ).toBe("/b.png");
+  });
+
+  it("emits one ref per srcset element from discoverAssets", async () => {
+    await withTmpDir(async (dir) => {
+      const html = `<html><body>
+        <img src="/img/x.png" srcset="/img/x-480.png 480w, /img/x-960.png 960w, /img/x-1440.png 1440w">
+        <picture><source srcset="/p-1x.png 1x, /p-2x.png 2x, /p-3x.png 3x"></picture>
+      </body></html>`;
+      const file = join(dir, "page.html");
+      await writeFile(file, html);
+      const refs = await discoverAssets(file, "https://x.example/");
+      const imgs = refs.filter((r) => r.type === "img").map((r) => r.url);
+      // src=/img/x.png + largest srcset entry (1440) + largest source (3x)
+      expect(imgs).toContain("https://x.example/img/x.png");
+      expect(imgs).toContain("https://x.example/img/x-1440.png");
+      expect(imgs).toContain("https://x.example/p-3x.png");
+      expect(imgs).not.toContain("https://x.example/img/x-480.png");
+      expect(imgs).not.toContain("https://x.example/img/x-960.png");
+      expect(imgs).not.toContain("https://x.example/p-1x.png");
+      expect(imgs).not.toContain("https://x.example/p-2x.png");
     });
   });
 });
