@@ -16,6 +16,7 @@ import {
   injectSeoHeadNodes,
 } from "../core/extractor.js";
 import { generateResponsiveImages, rewriteImgToPicture } from "../core/images.js";
+import { purgePageCss, inlineCriticalCss } from "../core/css.js";
 
 interface BuildOptions {
   force: string[];
@@ -236,8 +237,13 @@ export function registerBuild(program: Command): void {
               finalPagePaths.push(resolve(outputDir, "pages", name));
             }
           }
-        } catch {
-          /* no pages dir */
+        } catch (err) {
+          const code = (err as NodeJS.ErrnoException).code;
+          if (code === "ENOENT") {
+            console.warn(`    ! pages dir missing, skipping <picture> rewrite`);
+          } else {
+            throw err;
+          }
         }
         for (const p of finalPagePaths) {
           const html = await readFile(p, "utf8");
@@ -249,5 +255,35 @@ export function registerBuild(program: Command): void {
         }
         console.log(`  → ${pictureRewritten} pages updated with <picture>\n`);
       }
+
+      console.log(`  Purging unused CSS and inlining critical CSS...`);
+      let cssProcessedPages = 0;
+      const finalPagesForCss: string[] = [];
+      try {
+        const existing = await readdir(resolve(outputDir, "pages"), { recursive: true });
+        for (const name of existing) {
+          if (typeof name === "string" && name.endsWith("index.html")) {
+            finalPagesForCss.push(resolve(outputDir, "pages", name));
+          }
+        }
+      } catch (err) {
+        const code = (err as NodeJS.ErrnoException).code;
+        if (code !== "ENOENT") throw err;
+        console.warn(`    ! pages dir missing, skipping CSS optimization`);
+      }
+      for (const p of finalPagesForCss) {
+        try {
+          const html = await readFile(p, "utf8");
+          const purged = await purgePageCss(html, outputDir);
+          const inlined = await inlineCriticalCss(purged, outputDir);
+          if (inlined !== html) {
+            await writeFile(p, inlined);
+            cssProcessedPages++;
+          }
+        } catch (err) {
+          console.warn(`    ! ${p}: CSS optimization failed: ${(err as Error).message}`);
+        }
+      }
+      console.log(`  → ${cssProcessedPages} pages CSS-optimized\n`);
     });
 }
