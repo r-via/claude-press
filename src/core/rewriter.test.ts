@@ -163,4 +163,19 @@ describe("rewriteHreflangUrls", () => {
     const out = rewriteHreflangUrls(html, "https://ex.com/", "http://localhost:8080/");
     expect(out).toContain('href="https://other.com/de/page/"');
   });
+
+  it("emits path-only hrefs when no localBaseUrl is given", () => {
+    const html = `<link rel="alternate" hreflang="fr" href="https://ex.com/fr/page/"><link rel="alternate" hreflang="en" href="https://ex.com/en/page/">`;
+    const out = rewriteHreflangUrls(html, "https://ex.com/");
+    expect(out).toContain('href="/fr/page/"');
+    expect(out).toContain('href="/en/page/"');
+    expect(out).not.toContain("https://ex.com");
+  });
+
+  it("emits path-only hrefs when localBaseUrl shares origin with original (identical-origin degenerate case)", () => {
+    const html = `<link rel="alternate" hreflang="fr" href="https://ex.com/fr/page/">`;
+    const out = rewriteHreflangUrls(html, "https://ex.com/", "https://ex.com/");
+    expect(out).toContain('href="/fr/page/"');
+    expect(out).not.toContain('href="https://ex.com/fr/page/"');
+  });
 });

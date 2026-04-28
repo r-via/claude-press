@@ -182,11 +182,17 @@ export function rewriteHtmlAssetUrls(
  * Rewrite `href` attributes on `<link rel="alternate" hreflang="...">` tags
  * from `originalBaseUrl` to `localBaseUrl`, preserving the path.  Other links
  * are left untouched.  Pages with no hreflang links are returned unchanged.
+ *
+ * When `localBaseUrl` is falsy (empty string / undefined) OR is identical to
+ * `originalBaseUrl`'s origin, the rewrite emits **path-only** hrefs (the
+ * `pathname + search + hash` portion of the original URL).  This is the
+ * useful default when the cache is served from a not-yet-known host —
+ * relative-root paths work regardless of where the cache is mounted.
  */
 export function rewriteHreflangUrls(
   html: string,
   originalBaseUrl: string,
-  localBaseUrl: string,
+  localBaseUrl?: string,
 ): string {
   if (!/hreflang/i.test(html)) return html;
 
@@ -194,16 +200,22 @@ export function rewriteHreflangUrls(
   let touched = false;
 
   let originOriginal: string;
-  let originLocal: string;
   try {
     originOriginal = new URL(originalBaseUrl).origin;
   } catch {
     return html;
   }
-  try {
-    originLocal = new URL(localBaseUrl).origin;
-  } catch {
-    originLocal = localBaseUrl.replace(/\/+$/, "");
+
+  let originLocal: string | null = null;
+  if (localBaseUrl) {
+    try {
+      originLocal = new URL(localBaseUrl).origin;
+    } catch {
+      originLocal = localBaseUrl.replace(/\/+$/, "");
+    }
+    // Identical origin → degenerate to path-only rewrite (otherwise the
+    // call is a no-op, which silently breaks the integration wiring).
+    if (originLocal === originOriginal) originLocal = null;
   }
 
   $('link[rel="alternate"][hreflang]').each((_i, el) => {
@@ -218,7 +230,7 @@ export function rewriteHreflangUrls(
     }
     if (absolute.origin !== originOriginal) return;
     const path = absolute.pathname + absolute.search + absolute.hash;
-    const next = `${originLocal}${path}`;
+    const next = originLocal === null ? path : `${originLocal}${path}`;
     if (next !== raw) {
       $el.attr("href", next);
       touched = true;

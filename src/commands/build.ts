@@ -25,6 +25,7 @@ import { purgePageCss, inlineCriticalCss } from "../core/css.js";
 import { minifyJsAssets, deferNonEssentialScripts } from "../core/js.js";
 import { subsetFonts, injectFontDisplaySwap } from "../core/fonts.js";
 import { generateOutputSitemap } from "../core/sitemap-gen.js";
+import { cleanHtml, removeNonEssentialMeta } from "../core/html-clean.js";
 
 interface BuildOptions {
   force: string[];
@@ -137,7 +138,10 @@ export function registerBuild(program: Command): void {
         });
         // Multilingual: re-target hreflang cross-references to the local URL
         // space so language switchers keep working (README § Multilingual).
-        next = rewriteHreflangUrls(next, sitemapOrigin, sitemapOrigin);
+        // Path-only output: omit the localBaseUrl so each href becomes a
+        // root-relative path that works regardless of where the cache is
+        // served (file://, localhost, production CDN).
+        next = rewriteHreflangUrls(next, sitemapOrigin);
         if (next !== html) {
           await writeFile(entry.localPath, next);
           rewrittenPages++;
@@ -268,6 +272,41 @@ export function registerBuild(program: Command): void {
         }
         console.log(`  → ${pictureRewritten} pages updated with <picture>\n`);
       }
+
+      console.log(`  Cleaning HTML (dead code, empty attrs, whitespace)...`);
+      let htmlCleanedPages = 0;
+      let htmlCleanBytesBefore = 0;
+      let htmlCleanBytesAfter = 0;
+      const finalPagesForClean: string[] = [];
+      try {
+        const existing = await readdir(resolve(outputDir, "pages"), { recursive: true });
+        for (const name of existing) {
+          if (typeof name === "string" && name.endsWith("index.html")) {
+            finalPagesForClean.push(resolve(outputDir, "pages", name));
+          }
+        }
+      } catch (err) {
+        const code = (err as NodeJS.ErrnoException).code;
+        if (code !== "ENOENT") throw err;
+      }
+      for (const p of finalPagesForClean) {
+        try {
+          const html = await readFile(p, "utf8");
+          htmlCleanBytesBefore += Buffer.byteLength(html, "utf8");
+          const cleaned = cleanHtml(html);
+          const stripped = removeNonEssentialMeta(cleaned);
+          htmlCleanBytesAfter += Buffer.byteLength(stripped, "utf8");
+          if (stripped !== html) {
+            await writeFile(p, stripped);
+            htmlCleanedPages++;
+          }
+        } catch (err) {
+          console.warn(`    ! ${p}: HTML cleanup failed: ${(err as Error).message}`);
+        }
+      }
+      console.log(
+        `  → ${htmlCleanedPages} pages cleaned, ${htmlCleanBytesBefore - htmlCleanBytesAfter} bytes saved\n`,
+      );
 
       console.log(`  Purging unused CSS and inlining critical CSS...`);
       let cssProcessedPages = 0;
