@@ -4,6 +4,7 @@ import { mkdir, access } from "node:fs/promises";
 import { expandSitemap } from "../core/sitemap.js";
 import { loadConfig } from "../core/config.js";
 import { downloadPages } from "../core/crawler.js";
+import { discoverAssets, downloadAssets, type AssetRef } from "../core/assets.js";
 
 interface BuildOptions {
   force: string[];
@@ -66,7 +67,29 @@ export function registerBuild(program: Command): void {
         console.warn(`    ! ${f.url}: ${f.error}`);
       }
 
-      // TODO: cluster → synthesize templates → fill → asset pipeline
+      console.log(`  Discovering assets...`);
+      const allRefs: AssetRef[] = [];
+      const seenAssetUrls = new Set<string>();
+      for (const entry of manifest) {
+        const refs = await discoverAssets(entry.localPath, entry.url);
+        for (const r of refs) {
+          if (seenAssetUrls.has(r.url)) continue;
+          seenAssetUrls.add(r.url);
+          allRefs.push(r);
+        }
+      }
+      console.log(`  → ${allRefs.length} unique assets discovered`);
+
+      console.log(`  Downloading assets...`);
+      const assetResult = await downloadAssets(allRefs, outputDir, config.crawler);
+      console.log(
+        `  → ${Object.keys(assetResult.manifest).length} fetched, ${assetResult.failures.length} failed\n`,
+      );
+      for (const f of assetResult.failures) {
+        console.warn(`    ! ${f.url}: ${f.error}`);
+      }
+
+      // TODO: cluster → synthesize templates → fill → URL rewriting
       console.log(`  (cluster + template pipeline not yet implemented)\n`);
     });
 }
