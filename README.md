@@ -98,6 +98,25 @@ claude-press init https://example.com/
 claude-press build https://example.com/sitemap.xml ./output
 ```
 
+URLs can be filtered directly from the command line — useful for testing on a subset before a full run, or for rebuilding a single page:
+
+```bash
+# Only process URLs whose path matches a glob (repeatable, OR semantics)
+claude-press build https://example.com/sitemap.xml ./output \
+  --only '/en/blog/**' \
+  --only '/fr/'
+
+# Process exactly these URLs (skip the sitemap entirely; treat the args as the input set)
+claude-press build ./output \
+  --url https://example.com/en/blog/travel-ideas/what-to-do-in-spain/ \
+  --url https://example.com/fr/
+
+# Limit to N URLs from the sitemap (useful for smoke tests)
+claude-press build https://example.com/sitemap.xml ./output --limit 10
+```
+
+`--only` and `--limit` apply on top of the sitemap; `--url` bypasses sitemap fetching altogether. All three compose with `--force` and `--force-all`.
+
 **`refine`** — runs the refinement agent over already-built pages (skips pages already refined unless `--force` is passed).
 
 ```bash
