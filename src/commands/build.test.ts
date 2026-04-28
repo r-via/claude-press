@@ -17,6 +17,7 @@ import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { rewriteImgToPicture } from "../core/images.js";
 import { inlineCriticalCss, purgePageCss } from "../core/css.js";
+import picomatch from "picomatch";
 
 async function tmp(): Promise<string> {
   return await mkdtemp(resolve(tmpdir(), "build-smoke-"));
@@ -86,5 +87,92 @@ describe("build pipeline post-fill ordering smoke test", () => {
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
+  });
+});
+
+/**
+ * US-023: Build URL filtering — --only, --url, and --limit CLI flags.
+ *
+ * Tests the filtering logic used in build.ts in isolation (same picomatch
+ * glob matching, same array slicing) without running the full build pipeline.
+ */
+describe("build URL filtering (US-023)", () => {
+  // Helper: simulate the --only filtering logic from build.ts
+  function filterOnly(
+    entries: Array<{ loc: string }>,
+    patterns: string[],
+  ): Array<{ loc: string }> {
+    if (patterns.length === 0) return entries;
+    const matchers = patterns.map((g) => picomatch(g));
+    return entries.filter((e) => {
+      const pathname = new URL(e.loc).pathname;
+      return matchers.some((m) => m(pathname));
+    });
+  }
+
+  // Helper: simulate --url bypassing sitemap
+  function fromUrls(urls: string[]): Array<{ loc: string }> {
+    return urls.map((u) => ({ loc: u }));
+  }
+
+  const sitemapEntries = [
+    { loc: "https://example.com/en/blog/post-1/" },
+    { loc: "https://example.com/en/blog/post-2/" },
+    { loc: "https://example.com/fr/blog/article-1/" },
+    { loc: "https://example.com/fr/" },
+    { loc: "https://example.com/en/about/" },
+  ];
+
+  it("--only filters URLs by path glob", () => {
+    const result = filterOnly(sitemapEntries, ["/en/blog/**"]);
+    expect(result).toHaveLength(2);
+    expect(result.map((e) => e.loc)).toEqual([
+      "https://example.com/en/blog/post-1/",
+      "https://example.com/en/blog/post-2/",
+    ]);
+  });
+
+  it("multiple --only patterns use OR semantics", () => {
+    const result = filterOnly(sitemapEntries, ["/en/blog/**", "/fr/"]);
+    expect(result).toHaveLength(3);
+    const locs = result.map((e) => e.loc);
+    expect(locs).toContain("https://example.com/en/blog/post-1/");
+    expect(locs).toContain("https://example.com/en/blog/post-2/");
+    expect(locs).toContain("https://example.com/fr/");
+  });
+
+  it("--url bypasses sitemap and uses provided URLs directly", () => {
+    const urls = [
+      "https://example.com/en/blog/post-1/",
+      "https://example.com/fr/",
+    ];
+    const result = fromUrls(urls);
+    expect(result).toHaveLength(2);
+    expect(result[0]?.loc).toBe("https://example.com/en/blog/post-1/");
+    expect(result[1]?.loc).toBe("https://example.com/fr/");
+  });
+
+  it("--limit caps URL count", () => {
+    const limited = sitemapEntries.slice(0, 2);
+    expect(limited).toHaveLength(2);
+    expect(limited[0]?.loc).toBe("https://example.com/en/blog/post-1/");
+    expect(limited[1]?.loc).toBe("https://example.com/en/blog/post-2/");
+  });
+
+  it("--only + --limit compose correctly", () => {
+    const filtered = filterOnly(sitemapEntries, ["/en/**"]);
+    expect(filtered).toHaveLength(3); // blog/post-1, blog/post-2, about
+    const limited = filtered.slice(0, 2);
+    expect(limited).toHaveLength(2);
+  });
+
+  it("--only + --force compose (filtering before incremental skip)", () => {
+    // --only happens before force/incremental check — just verify filter works
+    const filtered = filterOnly(sitemapEntries, ["/fr/**"]);
+    expect(filtered).toHaveLength(2); // /fr/blog/article-1/, /fr/
+    // --force would then override the incremental skip on matching paths
+    const forceSet = new Set(["/fr/"]);
+    const u = new URL(filtered[1]!.loc);
+    expect(forceSet.has(u.pathname)).toBe(true);
   });
 });

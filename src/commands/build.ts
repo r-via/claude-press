@@ -35,10 +35,14 @@ import { subsetFonts, injectFontDisplaySwap } from "../core/fonts.js";
 import { generateOutputSitemap } from "../core/sitemap-gen.js";
 import { cleanHtml, removeNonEssentialMeta } from "../core/html-clean.js";
 import { injectLcpPreload, injectFontPreloads } from "../core/preload.js";
+import picomatch from "picomatch";
 
 interface BuildOptions {
   force: string[];
   forceAll: boolean;
+  only: string[];
+  url: string[];
+  limit?: number;
 }
 
 async function pageAlreadyBuilt(outputDir: string, url: string): Promise<boolean> {
@@ -56,10 +60,13 @@ export function registerBuild(program: Command): void {
   program
     .command("build")
     .description("Crawl the sitemap and render pages to ./output (incremental by default)")
-    .argument("<sitemap>", "Sitemap URL")
+    .argument("<sitemap>", "Sitemap URL (ignored when --url is provided)")
     .argument("<output>", "Output directory")
     .option("--force <path...>", "force-rebuild specific URL paths", [])
     .option("--force-all", "force-rebuild every page", false)
+    .option("--only <glob...>", "filter sitemap URLs by path glob (repeatable, OR semantics)", [])
+    .option("--url <url...>", "process exact URLs, bypassing sitemap", [])
+    .option("--limit <n>", "limit number of URLs from the sitemap", (v: string) => parseInt(v, 10))
     .action(async (sitemap: string, output: string, opts: BuildOptions) => {
       const config = loadConfig();
       const outputDir = resolve(output);
@@ -72,9 +79,35 @@ export function registerBuild(program: Command): void {
       console.log(`  output:  ${outputDir}`);
       console.log(`  llm:     ${config.llm.mode} (${config.llm.optimizerModel})\n`);
 
-      console.log(`  Expanding sitemap...`);
-      const entries = await expandSitemap(sitemap, config.crawler.userAgent);
-      console.log(`  → ${entries.length} URLs\n`);
+      // URL sourcing: --url bypasses sitemap entirely; otherwise expand sitemap
+      let entries: Array<{ loc: string; lastmod?: string }>;
+      if (opts.url.length > 0) {
+        console.log(`  Using ${opts.url.length} explicit --url entries (sitemap skipped)`);
+        entries = opts.url.map((u) => ({ loc: u }));
+      } else {
+        console.log(`  Expanding sitemap...`);
+        entries = await expandSitemap(sitemap, config.crawler.userAgent);
+        console.log(`  → ${entries.length} URLs`);
+      }
+
+      // --only: filter by path glob (OR semantics across patterns)
+      if (opts.only.length > 0) {
+        const matchers = opts.only.map((g) => picomatch(g));
+        const before = entries.length;
+        entries = entries.filter((e) => {
+          const pathname = new URL(e.loc).pathname;
+          return matchers.some((m) => m(pathname));
+        });
+        console.log(`  → --only filtered ${before} → ${entries.length} URLs`);
+      }
+
+      // --limit: cap URL count
+      if (opts.limit !== undefined && opts.limit > 0) {
+        entries = entries.slice(0, opts.limit);
+        console.log(`  → --limit capped to ${entries.length} URLs`);
+      }
+
+      console.log("");
 
       const forceSet = new Set(opts.force);
       const toFetch: string[] = [];
@@ -142,7 +175,11 @@ export function registerBuild(program: Command): void {
       console.log(`  Rewriting asset URLs in pages...`);
       let rewrittenPages = 0;
       let unmatchedCount = 0;
-      const sitemapOrigin = new URL(sitemap).origin;
+      // Derive origin: from the sitemap URL when available, or from the
+      // first --url entry when sitemap is bypassed.
+      const sitemapOrigin = opts.url.length > 0
+        ? new URL(opts.url[0]!).origin
+        : new URL(sitemap).origin;
       for (const entry of manifest) {
         const html = await readFile(entry.localPath, "utf8");
         const pageLocalPath = relative(outputDir, entry.localPath).split(/[\\/]/).join("/");
