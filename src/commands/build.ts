@@ -18,6 +18,7 @@ import {
 import { generateResponsiveImages, rewriteImgToPicture } from "../core/images.js";
 import { purgePageCss, inlineCriticalCss } from "../core/css.js";
 import { minifyJsAssets, deferNonEssentialScripts } from "../core/js.js";
+import { subsetFonts, injectFontDisplaySwap } from "../core/fonts.js";
 
 interface BuildOptions {
   force: string[];
@@ -322,5 +323,65 @@ export function registerBuild(program: Command): void {
         }
       }
       console.log(`  → ${deferredPages} pages updated with deferred scripts\n`);
+
+      console.log(`  Subsetting fonts and injecting font-display: swap...`);
+      const fontResult = await subsetFonts(outputDir, assetResult.manifest, {
+        log: (m) => console.warn(`    ${m}`),
+      });
+      const fontSaved = fontResult.bytesBefore - fontResult.bytesAfter;
+      console.log(
+        `  → ${fontResult.fontsProcessed} fonts subsetted, ${fontSaved} bytes saved`,
+      );
+
+      // Inject `font-display: swap` into every CSS file under assets/css/.
+      let cssFontDisplayUpdated = 0;
+      try {
+        const cssFiles = await readdir(resolve(outputDir, "assets", "css"));
+        for (const name of cssFiles) {
+          if (!name.endsWith(".css")) continue;
+          const p = resolve(outputDir, "assets", "css", name);
+          const css = await readFile(p, "utf8");
+          const next = injectFontDisplaySwap(css);
+          if (next !== css) {
+            await writeFile(p, next);
+            cssFontDisplayUpdated++;
+          }
+        }
+      } catch (err) {
+        const code = (err as NodeJS.ErrnoException).code;
+        if (code !== "ENOENT") throw err;
+      }
+
+      // Inject into inline <style> blocks in output HTML pages.
+      let htmlFontDisplayUpdated = 0;
+      const finalPagesForFonts: string[] = [];
+      try {
+        const existing = await readdir(resolve(outputDir, "pages"), {
+          recursive: true,
+        });
+        for (const name of existing) {
+          if (typeof name === "string" && name.endsWith("index.html")) {
+            finalPagesForFonts.push(resolve(outputDir, "pages", name));
+          }
+        }
+      } catch (err) {
+        const code = (err as NodeJS.ErrnoException).code;
+        if (code !== "ENOENT") throw err;
+      }
+      for (const p of finalPagesForFonts) {
+        const html = await readFile(p, "utf8");
+        const next = html.replace(
+          /(<style[^>]*>)([\s\S]*?)(<\/style>)/gi,
+          (_m, open: string, body: string, close: string) =>
+            open + injectFontDisplaySwap(body) + close,
+        );
+        if (next !== html) {
+          await writeFile(p, next);
+          htmlFontDisplayUpdated++;
+        }
+      }
+      console.log(
+        `  → font-display: swap injected into ${cssFontDisplayUpdated} CSS files, ${htmlFontDisplayUpdated} HTML pages\n`,
+      );
     });
 }
