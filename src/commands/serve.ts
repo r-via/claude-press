@@ -2,6 +2,7 @@ import type { Command } from "commander";
 import { resolve, join } from "node:path";
 import { stat, readFile } from "node:fs/promises";
 import { Hono } from "hono";
+import { compress } from "hono/compress";
 import { serve } from "@hono/node-server";
 
 interface ServeOptions {
@@ -51,6 +52,14 @@ async function tryRead(path: string): Promise<Uint8Array<ArrayBuffer> | undefine
  */
 export function createServeApp(outputDir: string): Hono {
   const app = new Hono();
+
+  // Compress responses (gzip/deflate via Hono's built-in middleware) when
+  // the client advertises support via `Accept-Encoding`. Compressible MIME
+  // types only (HTML, CSS, JS, JSON, SVG, XML — handled by Hono's default
+  // content-type filter); already-compressed binary assets (AVIF, WebP,
+  // WOFF2, PNG, JPEG) are skipped automatically.
+  // README § Commands `serve`: "applies gzip/brotli compression".
+  app.use("*", compress({ threshold: 0 }));
 
   app.get("/sitemap.xml", async (c) => {
     const buf = await tryRead(join(outputDir, "sitemap.xml"));

@@ -13,6 +13,7 @@ import {
 import {
   clusterPages,
   computeSkeleton,
+  deriveLanguagePrefix,
   detectDivergentPages,
   type Cluster,
 } from "../core/clustering.js";
@@ -210,11 +211,19 @@ export function registerBuild(program: Command): void {
       // cluster's representative get their own ad-hoc single-page cluster
       // routed through synthesizeTemplates so the LLM produces a new
       // template (README § "Template-driven rebuild" step 4).
-      const pageSkeletons: Array<{ path: string; skeleton: string }> = [];
+      const pageSkeletons: Array<{
+        path: string;
+        skeleton: string;
+        languagePrefix: string;
+      }> = [];
       for (const p of allPagePaths) {
         try {
           const html = await readFile(p, "utf8");
-          pageSkeletons.push({ path: p, skeleton: computeSkeleton(html) });
+          pageSkeletons.push({
+            path: p,
+            skeleton: computeSkeleton(html),
+            languagePrefix: deriveLanguagePrefix(html, p),
+          });
         } catch {
           /* unreadable page — ignore */
         }
@@ -223,14 +232,15 @@ export function registerBuild(program: Command): void {
       const divergentClusters: Cluster[] = [];
       for (let i = 0; i < divergent.length; i++) {
         const p = divergent[i] ?? "";
-        const sk = pageSkeletons.find((x) => x.path === p)?.skeleton ?? "";
+        const meta = pageSkeletons.find((x) => x.path === p);
+        const sk = meta?.skeleton ?? "";
         if (!p) continue;
         divergentClusters.push({
           id: `cluster-divergent-${i}`,
           fingerprint: createHash("sha256").update(sk).digest("hex").slice(0, 12),
           skeleton: sk,
           pages: [p],
-          languagePrefix: "",
+          languagePrefix: meta?.languagePrefix ?? "",
         });
       }
       if (divergentClusters.length > 0) {
